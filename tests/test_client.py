@@ -1,3 +1,4 @@
+import json
 import math
 import httpx, pytest, respx
 from orcaslicer_mcp.config import Config
@@ -109,3 +110,21 @@ async def test_load_model_uses_extended_timeout():
     assert out["loaded"] is True
     ext = route.calls.last.request.extensions["timeout"]
     assert ext["read"] == 130.0
+
+
+@respx.mock
+async def test_load_model_sends_local_paths_as_path():
+    route = respx.post("http://x:13130/api/v1/model").mock(
+        return_value=httpx.Response(200, json={"loaded": True, "objects": []}))
+    async with OrcaClient(CFG) as c:
+        await c.load_model("C:/parts/bracket.step")
+    assert json.loads(route.calls.last.request.read()) == {"path": "C:/parts/bracket.step"}
+
+
+@respx.mock
+async def test_load_model_sends_http_urls_as_url():
+    route = respx.post("http://x:13130/api/v1/model").mock(
+        return_value=httpx.Response(200, json={"loaded": True, "objects": []}))
+    async with OrcaClient(CFG) as c:
+        await c.load_model("HTTP://impresora3d.casa/files/out/tolva/tolva.stl")
+    assert json.loads(route.calls.last.request.read()) == {"url": "HTTP://impresora3d.casa/files/out/tolva/tolva.stl"}

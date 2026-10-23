@@ -173,7 +173,8 @@ class OrcaClient:
     async def load_model(self, path: str) -> dict:
         # STEP tessellation can far exceed the default timeout (the fork holds
         # the request up to 120 s); give the read a matching allowance.
-        return await self._request("POST", "/api/v1/model", json={"path": path},
+        key = "url" if path.lower().startswith(("http://", "https://")) else "path"
+        return await self._request("POST", "/api/v1/model", json={key: path},
                                    timeout=130.0)
 
     async def select_preset(self, ptype: str, name: str) -> dict:
