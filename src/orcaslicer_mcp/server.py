@@ -868,7 +868,8 @@ async def load_model(path: str) -> dict:
     Accepts .stl/.obj/.3mf, plus .step/.stp on fork v2.3.2-mcp.3+. Large STEP files
     can take a minute to tessellate; the call waits.
     `path` may also be an http(s) URL from the home model library
-    (impresora3d.casa, 192.168.1.17): the slicer downloads it itself. URL loads
+    (impresora3d.casa, 192.168.1.17): the slicer downloads it itself, e.g.
+    http://impresora3d.casa/api/download?root=out&path=<object>/<piece>.stl. URL loads
     accept .stl/.obj/.step/.stp only, never .3mf."""
     try:
         async with _client() as c:
