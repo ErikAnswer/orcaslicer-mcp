@@ -114,6 +114,12 @@ class OrcaClient:
             body["scale"] = scale
         return await self._request("POST", f"/api/v1/objects/{obj_id}/transform", json=body)
 
+    async def create_calibration(self, body: dict) -> dict:
+        return await self._request("POST", "/api/v1/calibration", json=body, timeout=130.0)
+
+    async def send_to_queue(self) -> dict:
+        return await self._request("POST", "/api/v1/print/queue", timeout=130.0)
+
     async def arrange(self) -> dict:
         return await self._request("POST", "/api/v1/arrange")
 

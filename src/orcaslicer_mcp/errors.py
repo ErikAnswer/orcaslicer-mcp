@@ -51,6 +51,8 @@ class Validation(ApiError):
 
 def error_from_status(status: int, body: dict) -> ApiError:
     msg = body.get("error") or body.get("detail") or f"HTTP {status}"
+    if body.get("error") and isinstance(body.get("detail"), str):
+        msg = f"{body['error']}: {body['detail']}"
     if status == 401:
         return Unauthorized("unauthorized (check ORCA_API_TOKEN)")
     if status == 404:

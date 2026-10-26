@@ -114,6 +114,14 @@
       "description": "List objects in the project: id (stable), name, size_mm, transform (offset/rotation/scale) and, on fork v2.4.2-mcp.13 and later, the 0-based plate each one sits on (-1 when it is off every plate)."
     },
     {
+      "name": "create_calibration",
+      "description": "Create a calibration test exactly like OrcaSlicer's Calibration menu."
+    },
+    {
+      "name": "send_to_queue",
+      "description": "Send the sliced current plate to the home print queue through the selected printer preset's own Flashforge send (the send dialog's defaults and automatic material-slot mapping, without the dialog)."
+    },
+    {
       "name": "set_object_config",
       "description": "Set per-object config overrides on an object by id, e.g. {\"wall_loops\": 4, \"sparse_infill_density\": \"30%\"}. Atomic (nothing applied if any key is invalid)."
     },

@@ -444,6 +444,61 @@ async def list_objects() -> dict:
 
 
 @mcp.tool()
+async def create_calibration(
+    type: str,
+    start: float | None = None,
+    end: float | None = None,
+    step: float | None = None,
+    flow_pass: int = 1,
+    linear: bool = False,
+    tool: int | None = None,
+    discard_unsaved: bool = False,
+) -> dict:
+    """Create a calibration test exactly like OrcaSlicer's Calibration menu. It REPLACES the
+    current project: with unsaved changes it is refused (unsaved_project) unless
+    discard_unsaved=True, so ask the user before discarding.
+    type: pa_line | pa_pattern | pa_tower | flow_rate | temp_tower | max_volumetric_speed |
+    retraction | vfa. Range types need start/end/step (e.g. pa_tower 0, 0.08, 0.002 for
+    Klipper-scale PA on a direct drive; temp_tower 230, 195, 5). flow_rate takes flow_pass
+    1|2 and linear. tool (1-based) assigns every test object to that extruder/head. On
+    multi-tool printers the generator writes its filament overrides to the filament OPEN in
+    the Filament tab, so select_preset that filament first. Afterwards slice_and_wait and
+    check get_gcode (tool changes, temperatures, PA commands) before send_to_queue."""
+    body: dict = {"type": type, "discard_unsaved": discard_unsaved}
+    if type == "flow_rate":
+        body |= {"pass": flow_pass, "linear": linear}
+    else:
+        body |= {"start": start, "end": end, "step": step}
+    try:
+        async with _client() as c:
+            out = await c.create_calibration(body)
+            if tool is not None:
+                assigned = []
+                for obj in out.get("objects", []):
+                    await c.set_object_config(obj["id"], {"extruder": tool})
+                    assigned.append(obj["id"])
+                out["tool"] = tool
+                out["assigned_objects"] = assigned
+            return out
+    except ApiError as e:
+        return _err(e)
+
+
+@mcp.tool()
+async def send_to_queue() -> dict:
+    """Send the sliced current plate to the home print queue through the selected printer
+    preset's own Flashforge send (the send dialog's defaults and automatic material-slot
+    mapping, without the dialog). Refused (not_queue_printer) unless that printer points at
+    the queue; it never reaches a printer directly. The queue holds the job until the user
+    confirms the bed is clear and starts it. Slice first, and only send when the user asked."""
+    try:
+        async with _client() as c:
+            return await c.send_to_queue()
+    except ApiError as e:
+        return _err(e)
+
+
+@mcp.tool()
 async def set_object_config(object_id: int, changes: dict) -> dict:
     """Set per-object config overrides on an object by id, e.g. {"wall_loops": 4, "sparse_infill_density": "30%"}. Atomic (nothing applied if any key is invalid)."""
     try:
@@ -1511,6 +1566,8 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
     "apply_and_slice": ("Apply config and slice", False, False),
     "cancel_slice": ("Cancel running slice", False, False),
     "set_object_config": ("Set per-object config", False, False),
+    "create_calibration": ("Create calibration test", False, True),
+    "send_to_queue": ("Send plate to print queue", False, False),
     "duplicate_object": ("Duplicate object", False, False),
     "transform_object": ("Transform object", False, False),
     "arrange_plate": ("Arrange plate", False, False),
