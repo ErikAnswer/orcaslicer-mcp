@@ -3079,7 +3079,7 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
         row["skipped_hint"] = ("protected keys (custom G-code, scripts, printer connection) are never "
                                "written by the MCP; change them by hand in OrcaSlicer if needed")
     changes = {k: v for k, v in changes.items() if k not in blocked}
-    if start_name == name and not changes:
+    if start_name == name and not changes and blocked:
         return row | {"action": "none", "status": "only_protected_keys_differ"}
     row["start_from"] = start_name
     row["keys_to_write"] = len(changes)
