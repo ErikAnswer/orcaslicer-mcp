@@ -1161,7 +1161,9 @@ async def apply_calibration(
     if plan.warnings:
         out["warnings"] = plan.warnings
     if dry_run:
-        return out | {"dry_run": True}
+        return out | {"dry_run": True,
+                      "note": "the physics gate and key guard run only when saving; preview them "
+                              "with check_profile_physics(changes) on the open project"}
     saved = await edit_preset("filament", filament, plan.changes)
     if saved.get("error"):
         return saved | {"changes": plan.changes, "previous": plan.previous}

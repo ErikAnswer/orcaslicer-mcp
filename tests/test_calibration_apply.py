@@ -111,7 +111,7 @@ async def test_dry_run_saves_nothing(client):
     _mock_stored()
     select = respx.put(f"{BASE}/preset").mock(return_value=httpx.Response(200, json={"selected": "PLA"}))
     out = await srv.apply_calibration("PLA", "flow_rate", 5, dry_run=True)
-    assert out["dry_run"] is True
+    assert out["dry_run"] is True and "physics" in out["note"]
     assert out["changes"] == {"filament_flow_ratio": "1.029"}
     assert out["previous"] == {"filament_flow_ratio": "0.98"}
     assert select.call_count == 0
