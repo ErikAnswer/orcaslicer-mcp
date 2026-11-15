@@ -2895,6 +2895,8 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
     parent = await _parent_config(c, ptype, pc.get("inherits", "") or "")
     existing_raw = await g.download(gestor_entry["path"]) if gestor_entry else None
     existing = json.loads(existing_raw) if existing_raw is not None else None
+    if existing_raw is not None and not isinstance(existing, dict):
+        raise ValueError("not a JSON object")
     new_file = _psync.build_file(ptype, name, pc, parent, existing)
     content = _psync.dump_file(new_file)
     if existing is not None:
@@ -2906,15 +2908,15 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
         row |= {"action": "create"}
     if dry_run:
         return row | {"dry_run": True, "file_keys": len(new_file)}
+    filename = gestor_entry["path"] if gestor_entry else f"{name}.json"
+    backup = None
+    if gestor_entry is not None and await g.download(gestor_entry["path"]) != existing_raw:
+        return row | {"error": "gestor_changed", "detail": "the Gestor copy changed while comparing; run again"}
     unsaved = _unsaved_in(await c.get_status(), ptype, name)
     if unsaved:
         return row | {"error": "unsaved_changes", "modified": unsaved,
                       "hint": "the preset was edited in OrcaSlicer while comparing; save it (or discard the edits) and run again"}
-    filename = gestor_entry["path"] if gestor_entry else f"{name}.json"
-    backup = None
     if gestor_entry is not None:
-        if await g.download(gestor_entry["path"]) != existing_raw:
-            return row | {"error": "gestor_changed", "detail": "the Gestor copy changed while comparing; run again"}
         backup = await g.trash(gestor_entry["path"])
         if not backup.get("id"):
             return row | {"error": "backup_unconfirmed",

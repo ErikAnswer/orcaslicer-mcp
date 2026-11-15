@@ -387,3 +387,27 @@ async def test_a_success_answer_that_is_not_json_is_a_gestor_error(both):
     trash.mock(return_value=httpx.Response(201, content=b"<html>ok</html>"))
     row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
     assert row["error"] == "gestor_error" and "/api/trash" in row["detail"] and upload.call_count == 0
+
+
+@respx.mock
+async def test_a_gestor_copy_that_is_json_but_not_an_object_is_invalid(both):
+    _mock_pc()
+    trash, upload, _ = _mock_gestor()
+    for body in (b"null", b"[]", b"123"):
+        respx.get(f"{GESTOR}/api/download").mock(return_value=httpx.Response(200, content=body))
+        row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
+        assert row["error"] == "gestor_file_invalid"
+    assert trash.call_count == 0 and upload.call_count == 0
+
+
+@respx.mock
+async def test_an_existing_gestor_copy_keeps_its_path_whatever_the_name(both):
+    respx.get(f"{BASE}/presets").mock(return_value=httpx.Response(200, json={
+        "filament": [{"name": "..x", "system": False}], "print": [], "printer": []}))
+    respx.post(f"{BASE}/preset/config").mock(side_effect=lambda r: httpx.Response(200, json={
+        "name": json.loads(r.read())["name"], "system": False, "config": PC}))
+    respx.get(f"{BASE}/status").mock(return_value=httpx.Response(200, json={
+        "presets": {"filaments": ["Other"]}, "modified": {}}))
+    _, upload, _ = _mock_gestor(entries=[{"path": "x.json", "name": "..x", "kind": "filament"}])
+    row = (await srv.sync_presets("pc_to_gestor", ["..x"], dry_run=False))["presets"][0]
+    assert "error" not in row and upload.calls.last.request.url.params["filename"] == "x.json"
