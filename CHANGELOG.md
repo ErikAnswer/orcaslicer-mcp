@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+- `save_project` and `open_project` use the project routes of OrcaSlicer 2.5 (fork `erik-v2.5.0-mcp.16`): the tool still takes a name only, checks it itself and sends the path inside the "OrcaSlicer MCP" folder that `list_projects` reports. Opening an unlisted name is refused (`unknown_project`) and unsaved preset edits are still refused (`unsaved_presets`) before the call; unsaved project changes now come back as `unsaved_changes`, and a project with its own scripts, G-code or printer connection as `blocked_by_remote_api_policy` (OrcaSlicer's Remote API policy). Replacing another project with `overwrite` also needs "Allow deleting and replacing project files" in OrcaSlicer. On a 2.4.2 build these tools say they need `erik-v2.5.0-mcp.16`.
+
 ### Added
 - `sync_presets` with `direction="gestor_to_pc"` copies named Gestor 3D presets into the PC OrcaSlicer: it selects the file's parent preset (or the PC's own copy when it has the same parent), applies the file's settings and saves the preset under its name, then selects again what was selected before and checks the result against the file. It refuses while any preset group has unsaved edits, writes a JSON copy of the PC's previous version to `~/.cache/orcaslicer-mcp/preset-backups/` (`ORCA_PRESET_BACKUP_DIR`) first, reports the protected keys (custom G-code, scripts, printer connection) instead of writing them and defaults to a dry run.
 - `save_project`, `open_project` and `list_projects` keep projects as .3mf files in the "OrcaSlicer MCP" folder of the PC Documents, by name only. Opening refuses unsaved project changes unless `discard_unsaved`, unsaved preset edits always, and any project whose settings carry a `post_process` script. `clear_plate` removes every object of the current plate, or of all plates with `all_plates`. Needs fork `erik-v2.4.2-mcp.15`.

@@ -171,11 +171,11 @@
     },
     {
       "name": "save_project",
-      "description": "Save the whole project (all plates, objects, their settings and the presets in use) as <name>.3mf in the \"OrcaSlicer MCP\" folder of the PC's Documents, like File > Save project as, and make it the open project. Only names are accepted, never paths. An empty project is refused (empty)."
+      "description": "Save the whole project (all plates, objects, their settings and the presets in use) as <name>.3mf in the \"OrcaSlicer MCP\" folder of the PC's Documents, like File > Save project as, and make it the open project. Only names are accepted, never paths (invalid_name). An empty project is refused (empty)."
     },
     {
       "name": "open_project",
-      "description": "Open <name>.3mf from the \"OrcaSlicer MCP\" folder of the PC's Documents, like File > Open project. It REPLACES the current project: with unsaved changes it is refused (unsaved_project) unless discard_unsaved=True, so ask the user or save_project first."
+      "description": "Open <name>.3mf from the \"OrcaSlicer MCP\" folder of the PC's Documents, like File > Open project. It REPLACES the current project: with unsaved changes it is refused (unsaved_changes) unless discard_unsaved=True, so ask the user or save_project first."
     },
     {
       "name": "move_object_to_plate",

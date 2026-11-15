@@ -23,6 +23,7 @@ from .breakdown import build_breakdown
 from .compare import compute_comparison
 from .gestor import GestorClient, GestorError, load_gestor_config
 from . import preset_sync as _psync
+from .projects import InvalidProjectName, is_listed, project_path, project_stem
 from .guard import allow_override_warnings, sensitive_keys
 from . import notes as _notes
 from . import outcomes as _outcomes
@@ -750,7 +751,14 @@ async def delete_plate(
 
 
 def _projects_err(e: ApiError) -> dict:
-    return _m4_err(e, "fork erik-v2.4.2-mcp.15 or later")
+    return _m4_err(e, "fork erik-v2.5.0-mcp.16 or later")
+
+
+_INVALID_PROJECT_NAME = {
+    "error": "invalid_name",
+    "detail": ("a plain file name: no folders, no <>:\"/\\|?*, no leading or trailing space or dot, "
+               "not a reserved Windows name, at most 100 characters"),
+}
 
 
 @mcp.tool()
@@ -790,15 +798,25 @@ async def save_project(
         "Project name, a plain file name without folders (\".3mf\" is optional), e.g. "
         "\"soporte mando v2\"."))],
     overwrite: Annotated[bool, Field(description=(
-        "Replace an existing project with the same name. Off by default (409 exists)."))] = False,
+        "Replace an existing project with the same name. Off by default (exists)."))] = False,
 ) -> dict:
     """Save the whole project (all plates, objects, their settings and the presets in use) as
     <name>.3mf in the "OrcaSlicer MCP" folder of the PC's Documents, like File > Save project
-    as, and make it the open project. Only names are accepted, never paths. An empty project
-    is refused (empty)."""
+    as, and make it the open project. Only names are accepted, never paths (invalid_name). An
+    empty project is refused (empty). Saving under the name of the project already open is a
+    plain Save. Replacing another existing project needs overwrite=True and, in OrcaSlicer,
+    Preferences > Remote API > "Allow deleting and replacing project files"
+    (blocked_by_remote_api_policy otherwise)."""
+    try:
+        stem = project_stem(name)
+    except InvalidProjectName:
+        return dict(_INVALID_PROJECT_NAME)
     try:
         async with _client() as c:
-            return await c.save_project(name, overwrite)
+            if (await c.get_project()).get("objects", 0) == 0:
+                return {"error": "empty", "detail": "there is nothing in the project to save"}
+            listing = await c.get_projects()
+            return await c.save_project(project_path(listing["folder"], stem), overwrite)
     except ApiError as e:
         return _projects_err(e)
 
@@ -812,14 +830,25 @@ async def open_project(
 ) -> dict:
     """Open <name>.3mf from the "OrcaSlicer MCP" folder of the PC's Documents, like File > Open
     project. It REPLACES the current project: with unsaved changes it is refused
-    (unsaved_project) unless discard_unsaved=True, so ask the user or save_project first.
+    (unsaved_changes) unless discard_unsaved=True, so ask the user or save_project first.
     Unsaved preset edits are always refused (unsaved_presets): they have to be saved or
-    discarded in OrcaSlicer. A project whose settings run a post-processing script is refused
-    (post_process) and stays a manual choice in OrcaSlicer. The reply lists the plates and the
-    objects with their new ids."""
+    discarded in OrcaSlicer. A project that brings its own scripts, G-code or printer
+    connection is refused (blocked_by_remote_api_policy) and stays a manual choice in
+    OrcaSlicer. The reply gives the plates, the object count and the presets selected."""
+    try:
+        stem = project_stem(name)
+    except InvalidProjectName:
+        return dict(_INVALID_PROJECT_NAME)
     try:
         async with _client() as c:
-            return await c.open_project(name, discard_unsaved)
+            listing = await c.get_projects()
+            if not is_listed(listing, stem):
+                return {"error": "unknown_project", "name": stem}
+            modified = (await c.get_project()).get("modified") or []
+            if modified:
+                return {"error": "unsaved_presets", "presets": modified,
+                        "detail": "save or discard the preset edits in OrcaSlicer first"}
+            return await c.open_project(project_path(listing["folder"], stem), discard_unsaved)
     except ApiError as e:
         return _projects_err(e)
 
