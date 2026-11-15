@@ -285,3 +285,41 @@ async def test_jobs_without_id_neither_hide_nor_become_the_new_job():
 def test_known_ids_skip_jobs_without_id():
     queue = {"jobs": [{"filename": "a"}, OLD], "history": [{"id": None}, DONE], "current": None}
     assert srv._queue_known_ids(queue) == {"old", "done"}
+
+
+@respx.mock
+async def test_hold_lost_answer_is_checked_in_the_queue():
+    held = NEW | {"status": "held"}
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([NEW]), _state([held])])
+    respx.post(f"{GESTOR}/api/queue/action").mock(side_effect=httpx.ReadTimeout("lost"))
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["held"] is True and out["job"]["status"] == "held"
+
+
+@respx.mock
+async def test_hold_lost_answer_and_unreadable_queue_is_unverified():
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([NEW]), httpx.ConnectError("down")])
+    respx.post(f"{GESTOR}/api/queue/action").mock(side_effect=httpx.ReadTimeout("lost"))
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["held"] is None and "could not be read back" in out["hold_detail"]
+
+
+@respx.mock
+async def test_hold_lost_answer_with_job_still_queued_is_not_held():
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([NEW]), _state([NEW])])
+    respx.post(f"{GESTOR}/api/queue/action").mock(side_effect=httpx.ConnectError("down"))
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["held"] is False and "instead of held" in out["hold_error"]
+
+
+@respx.mock
+async def test_new_job_without_id_is_reported_as_unidentifiable(monkeypatch):
+    monkeypatch.setattr(srv, "QUEUE_CONFIRM_ATTEMPTS", 2)
+    anon = {"filename": "cube.gcode.3mf", "status": "queued"}
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([anon]), _state([anon])])
+    _orca_ok()
+    out = await srv.send_to_queue()
+    assert out["queue_confirmed"] is False and "have no id" in out["queue_detail"]
