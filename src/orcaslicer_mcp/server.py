@@ -2883,7 +2883,7 @@ async def _sync_one_compare(c, g, ptype: str, name: str, gestor_entry: dict | No
     if pc is None:
         return row | {"status": "only_gestor", "gestor_path": gestor_entry["path"]}
     parent = await _parent_config(c, ptype, gestor_file.get("inherits", "") or "")
-    comparison = _psync.compare(pc, gestor_file, parent)
+    comparison = _psync.compare(pc, gestor_file, parent, ptype == "filament")
     row |= {"status": "different" if comparison.differences else "same",
             "gestor_path": gestor_entry["path"]}
     return row | (_diff_rows(comparison) if comparison.differences else {})
@@ -2892,7 +2892,7 @@ async def _sync_one_compare(c, g, ptype: str, name: str, gestor_entry: dict | No
 def _unsaved_in(status: dict, ptype: str, name: str) -> list:
     selected = (status.get("presets") or {}).get(ptype)
     names = selected if isinstance(selected, list) else [selected]
-    return list((status.get("modified") or {}).get(ptype) or []) if name in names else []
+    return _visible_keys((status.get("modified") or {}).get(ptype)) if name in names else []
 
 
 def _unsafe_file_name(name: str) -> bool:
@@ -2925,7 +2925,8 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
     new_file = _psync.build_file(ptype, name, pc, parent, existing)
     content = _psync.dump_file(new_file)
     if existing is not None:
-        comparison = _psync.compare(pc, existing, await _parent_config(c, ptype, existing.get("inherits", "") or ""))
+        comparison = _psync.compare(pc, existing, await _parent_config(c, ptype, existing.get("inherits", "") or ""),
+                                    ptype == "filament")
         if not comparison.differences:
             return row | {"action": "none", "status": "same"}
         row |= {"action": "replace"} | _diff_rows(comparison)
@@ -2968,7 +2969,8 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
 
 
 def _any_unsaved(status: dict) -> dict:
-    return {t: list(v) for t, v in (status.get("modified") or {}).items() if v}
+    visible = {t: _visible_keys(v) for t, v in (status.get("modified") or {}).items()}
+    return {t: v for t, v in visible.items() if v}
 
 
 def _backup_dir() -> Path:
@@ -2986,9 +2988,17 @@ def _write_pc_backup(ptype: str, name: str, stored: dict) -> str:
     return str(path)
 
 
-async def _restore_selection(c, before: dict) -> list:
+async def _filament_tab(c) -> str | None:
+    try:
+        return ((await c.get_filaments()).get("tab") or {}).get("preset")
+    except ApiError:
+        return None
+
+
+async def _restore_selection(c, before: dict, filament_tab: str | None = None) -> list:
     """Put back the presets that were selected before the pull, printer first because
-    selecting a printer can switch the other groups."""
+    selecting a printer can switch the other groups. Selecting a filament without a slot
+    moves only the Filament tab, never a sidebar slot, so the tab is put back last."""
     restored = []
     for ptype in ("printer", "print"):
         now = (await c.get_status()).get("presets") or {}
@@ -3002,6 +3012,9 @@ async def _restore_selection(c, before: dict) -> list:
             if slot < len(now) and now[slot] != name:
                 await c.select_preset("filament", name, slot=slot)
                 restored.append({"type": "filament", "name": name, "slot": slot})
+    if filament_tab and await _filament_tab(c) != filament_tab:
+        await c.select_preset("filament", filament_tab)
+        restored.append({"type": "filament", "name": filament_tab, "tab": True})
     return restored
 
 
@@ -3064,13 +3077,13 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
         return row | {"error": "no_base",
                       "detail": "the Gestor file inherits from nothing and the PC has no preset with this name to start from"}
     if pc is not None:
-        comparison = _psync.compare(pc, gestor_file, parent)
+        comparison = _psync.compare(pc, gestor_file, parent, ptype == "filament")
         if not comparison.differences:
             return row | {"action": "none", "status": "same"}
         row |= {"action": "replace"} | _diff_rows(comparison)
     else:
         row |= {"action": "create"}
-    changes = _psync.target_changes(gestor_file, start, parent)
+    changes = _psync.target_changes(gestor_file, start, parent, ptype == "filament")
     blocked = set(sensitive_keys(changes))
     if blocked:
         row["skipped_keys"] = [{"key": k, "gestor": gestor_file.get(k),
@@ -3090,6 +3103,7 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
     if unsaved:
         return row | {"error": "unsaved_changes", "modified": unsaved,
                       "hint": "save or discard the edits in OrcaSlicer first; selecting a preset would lose them"}
+    tab = await _filament_tab(c) if ptype == "filament" else None
     if stored:
         try:
             row["backup"] = _write_pc_backup(ptype, name, stored)
@@ -3097,12 +3111,13 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
             return row | {"error": "backup_failed", "detail": str(e)}
     failure = await _apply_and_save(c, ptype, name, start_name, start, changes)
     try:
-        row["reselected"] = await _restore_selection(c, status.get("presets") or {})
+        row["reselected"] = await _restore_selection(c, status.get("presets") or {}, tab)
     except ApiError as e:
         row["reselect_error"] = str(e)
     if failure:
         return row | failure
-    after = _psync.compare((await c.get_preset_config(ptype, name)).get("config", {}), gestor_file, parent)
+    after = _psync.compare((await c.get_preset_config(ptype, name)).get("config", {}), gestor_file, parent,
+                           ptype == "filament")
     left = [d.key for d in after.differences if d.key not in blocked]
     row["written"] = True
     row["verified"] = not left
