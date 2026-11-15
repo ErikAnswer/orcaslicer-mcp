@@ -139,7 +139,8 @@ async def test_open_project_refuses_a_project_outside_the_listing():
     respx.get(f"{BASE}/projects").mock(return_value=httpx.Response(200, json=LISTING))
     route = respx.post(f"{BASE}/project/open")
     out = await srv.open_project("nada")
-    assert out == {"error": "unknown_project", "name": "nada"} and not route.called
+    assert out["error"] == "unknown_project" and out["name"] == "nada" and not route.called
+    assert "list_projects" in out["detail"]
 
 
 @respx.mock

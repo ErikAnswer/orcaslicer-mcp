@@ -103,6 +103,7 @@ def client(monkeypatch):
 
 
 def _mock_stored():
+    respx.get(f"{BASE}/status").mock(return_value=httpx.Response(200, json={}))  # fork, not the plugin
     return respx.post(f"{BASE}/preset/config").mock(return_value=httpx.Response(200, json={"config": STORED}))
 
 
@@ -153,3 +154,16 @@ async def test_invalid_value_is_refused_before_selecting(client):
     out = await srv.apply_calibration("PLA", "vfa", 120)
     assert out["error"] == "invalid_calibration_value"
     assert select.call_count == 0
+
+
+@respx.mock
+async def test_temperature_pairs_answer_reaches_the_save(client):
+    _mock_stored()
+    respx.put(f"{BASE}/preset").mock(return_value=httpx.Response(200, json={"selected": "PLA"}))
+    respx.get(f"{BASE}/config").mock(return_value=httpx.Response(200, json={"config": STORED}))
+    respx.put(f"{BASE}/config").mock(return_value=httpx.Response(200, json={"applied": ["nozzle_temperature"]}))
+    save = respx.post(f"{BASE}/preset/save").mock(return_value=httpx.Response(200, json={"saved": True}))
+    await srv.apply_calibration("PLA", "temp_tower", 215)
+    assert "allow_temperature_pairs" not in json.loads(save.calls.last.request.read())
+    await srv.apply_calibration("PLA", "temp_tower", 215, allow_temperature_pairs=True)
+    assert json.loads(save.calls.last.request.read())["allow_temperature_pairs"] is True

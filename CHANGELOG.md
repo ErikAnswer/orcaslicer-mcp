@@ -5,20 +5,146 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.25-erik.1] - 2026-11-15
+Our fork (ErikAnswer) on top of orcaslicer-mcp 0.1.25; the package version stays 0.1.25 and the -erik.N suffix lives only in the git tag, as with 0.1.17-erik.N. Every route the 0.1.18-0.1.25 tools use (filament slots, Bambu Lab reads, the 2.5 temperature check) is in the fork build `erik-v2.5.0-mcp.16`, which carries all of MaxEllis's remote-api-250 (his v2.5.0-mcp.18).
 
 ### Changed
+- Merged orcaslicer-mcp 0.1.18-0.1.25. The project tools keep our contract: `list_projects`, `save_project` and `open_project` work by name inside the "OrcaSlicer MCP" folder of the PC Documents. The upstream path tools (`open_recent_project`, `list_recent_projects`, `forget_recent_project`, `browse_projects`, `move_project_file`, `delete_project_file`) are left out; `get_project` and `new_project` stay.
+- The first line of our tools' descriptions is now one whole sentence, like the upstream tools.
+
+### Removed
+- Publishing to PyPI, the MCP registry and OrcaCloud (`scripts/cut-release.sh`, `scripts/cut-plugin-release.sh`, `.github/workflows/publish-*.yml`, `packaging/server.json`, `plugin/orcacloud/`): this fork is installed from its git tags.
+
+### Changed (0.1.17-erik.3 to erik.9)
 - `save_project` and `open_project` use the project routes of OrcaSlicer 2.5 (fork `erik-v2.5.0-mcp.16`): the tool still takes a name only, checks it itself and sends the path inside the "OrcaSlicer MCP" folder that `list_projects` reports. Opening an unlisted name is refused (`unknown_project`) and unsaved preset edits are still refused (`unsaved_presets`) before the call; unsaved project changes now come back as `unsaved_changes`, and a project with its own scripts, G-code or printer connection as `blocked_by_remote_api_policy` (OrcaSlicer's Remote API policy). Replacing another project with `overwrite` also needs "Allow deleting and replacing project files" in OrcaSlicer. On a 2.4.2 build these tools say they need `erik-v2.5.0-mcp.16`.
 
-### Added
+### Added (0.1.17-erik.3 to erik.9)
 - `sync_presets` with `direction="gestor_to_pc"` copies named Gestor 3D presets into the PC OrcaSlicer: it selects the file's parent preset (or the PC's own copy when it has the same parent), applies the file's settings and saves the preset under its name, then selects again what was selected before and checks the result against the file. It refuses while any preset group has unsaved edits, writes a JSON copy of the PC's previous version to `~/.cache/orcaslicer-mcp/preset-backups/` (`ORCA_PRESET_BACKUP_DIR`) first, reports the protected keys (custom G-code, scripts, printer connection) instead of writing them and defaults to a dry run.
 - `save_project`, `open_project` and `list_projects` keep projects as .3mf files in the "OrcaSlicer MCP" folder of the PC Documents, by name only. Opening refuses unsaved project changes unless `discard_unsaved`, unsaved preset edits always, and any project whose settings carry a `post_process` script. `clear_plate` removes every object of the current plate, or of all plates with `all_plates`. Needs fork `erik-v2.4.2-mcp.15`.
 - `send_to_queue` reads the Gestor 3D queue after sending and returns the new job (`job.id`, filename, status) with `queue_confirmed: true`; when the plate was sent but the job cannot be identified (queue unreadable, job missing, several new jobs at once) it returns `queue_confirmed: false` and the reason instead of failing. `hold=true` puts the new job on hold in the queue; it refuses to send when the queue cannot be read first.
 - `sync_presets` compares the PC user presets with the copies the Gestor 3D (home print queue, `ORCA_GESTOR_URL`, default `http://192.168.1.17`) keeps for its headless slicing, key by key on effective values, and with `direction="pc_to_gestor"` copies named presets there in OrcaSlicer's own export format. It refuses presets with unsaved edits and system presets, never writes redacted credentials, moves the old Gestor copy to its trash before replacing it (restoring it if the upload fails) and defaults to a dry run.
 - `apply_calibration` writes the value picked from a calibration test into a filament preset with the right keys: PA tests set `pressure_advance` and turn `enable_pressure_advance` on; `flow_rate` scales `filament_flow_ratio` by (100 + modifier) / 100, or adds the offset of the linear (YOLO) test, from the stored value; `temp_tower`, `max_volumetric_speed` and `retraction` set `nozzle_temperature`, `filament_max_volumetric_speed` and `filament_retraction_length`. It saves through `edit_preset`, so the physics gate applies, and `dry_run` shows the change without saving.
 
-### Fixed
+### Fixed (0.1.17-erik.3 to erik.9)
 - The retraction check reads the filament's `filament_retraction_length` override when it is set, instead of judging only the printer's `retraction_length`.
+
+## [0.1.25] - 2026-11-13
+The OrcaSlicer MCP plugin 0.2.3 for stock OrcaSlicer 2.5 is attached below (`orcaslicer_mcp_plugin.py`) and on [OrcaCloud](https://cloud.orcaslicer.com/p/16d116a6bc41), which keeps it up to date.
+
+The filament slot tools, the Bambu Lab reads and the answer to the temperature check need the OrcaSlicer MCP build [v2.5.0-mcp.18](https://github.com/MaxEllis/OrcaSlicer/releases/tag/v2.5.0-mcp.18) or later. The plugin does not offer them.
+
+### Added
+- Bambu Lab printers: `get_printer_slots` reads the AMS and external spool of the printer selected in OrcaSlicer's Device tab. For each tray it gives the label, the type as the AMS words it, the name, brand, colour and remaining filament, and each unit's humidity. It reads them through OrcaSlicer's own connection, so nothing is sent to the printer and the answer is instant.
+- `get_filament_slot_mapping` on a Bambu Lab printer shows the tray OrcaSlicer's Send dialog will pre-fill for each filament of the plate, and whether that tray holds what the slot's preset says. Its `match` is exact, soft, none or unknown, with a headline and warnings. Soft means no tray holds the type, but one holds the same base material, say Polymaker LW-ASA in an `ASA-Aero` tray for a Generic ASA slot; both names are shown. `check_printer_match` runs that check on a Bambu printer profile instead of refusing. Status, waiting and print history on Bambu printers are still to come.
+- `get_filament_slots`: every filament slot of the project in one read, numbered as the sidebar numbers them. Each slot has its preset, filament type, vendor and colour, whether that preset is open in the Filament tab with unsaved edits, and which other slots share the preset.
+- `set_filament_slot_preset(slot, name, keep_colour)` points one slot at a preset and leaves the other slots alone. It never drops an unsaved edit: on a one-filament project, where the slot is the Filament tab's preset, it refuses while there are unsaved edits. The slot keeps its colour unless `keep_colour` is false, which sets the preset's own default colour.
+- `set_config` takes `filament_slot`: the per-filament keys go to that slot's preset instead of whichever preset is open in the Filament tab. `save_preset` takes `filament_slot` too. It saves from that slot's preset and points only that slot at the saved name, where OrcaSlicer's own Save As moves every slot that used the old preset (`slots_kept` says which were put back). Both are refused, with nothing changed, when the Filament tab holds unsaved edits to a different preset. The refusal, `filament_edits_unsaved`, lists the keys and says what to do.
+- `get_config` takes `by_slot`: a per-filament setting comes back as one value per slot, `{"1": "70", "2": "100"}`, instead of the merged `"70,100"` text. Works on any build.
+
+### Fixed
+- Saving a filament preset with `save_preset` or `edit_preset` no longer waits behind OrcaSlicer 2.5's "Temperature Safety Check". OrcaSlicer asks before it saves a filament preset whose first-layer temperature is more than 30 °C from the other layers' on the nozzle, or 15 °C on a plate type. The assistant could not answer that dialog, so the save timed out and the dialog stayed open. Now the save is refused and nothing is saved. The reply lists each pair that is too far apart. Once the user agrees, `allow_temperature_pairs=true` saves it as it is, like the dialog's Continue. On earlier 2.5 builds, a filament save that times out now says to look for that dialog.
+
+## [0.1.24] - 2026-11-13
+The OrcaSlicer MCP plugin 0.2.3 for stock OrcaSlicer 2.5 is attached below (`orcaslicer_mcp_plugin.py`) and on [OrcaCloud](https://cloud.orcaslicer.com/p/16d116a6bc41), which keeps it up to date.
+
+### Added
+- The OrcaSlicer MCP plugin's panel follows OrcaSlicer's language, in each of OrcaSlicer's 22 languages, like the OrcaSlicer MCP build's panel since v2.5.0-mcp.17. Setting names and their choices come from OrcaSlicer's own translation file, so a row uses the same words as the sidebar. The plugin's own words, its setup view included, were machine-translated. Catalan, Basque, Hungarian and Traditional Chinese are recognised too, although OrcaSlicer 2.5 reports them to plugins as English or Simplified Chinese.
+- The plugin takes `POST /api/v1/activity/note` with `"kind": "note"`, as the build does: the assistant's own words, a plain row in the current group with no undo.
+
+### Changed
+- The README and the OrcaSlicer MCP plugin's setup (0.2.2) say that every AI app needs uv installed once, the Claude Desktop extension included: it runs the connector with uv too. The extension's description now also lists the plugin on stock OrcaSlicer 2.5, not only the OrcaSlicer MCP build.
+- orcaslicer-mcp now tells you when your plugin is older than 0.2.3.
+
+### Fixed
+- An OrcaSlicer that starts on its Home tab has no OrcaSlicer MCP plugin panel until you click Prepare, so every request timed out and the assistant was told a dialog might be open. The plugin now answers `panel_not_open`, and the assistant asks you to click Prepare.
+- The plugin's setup for the ChatGPT desktop app said to paste `uvx orcaslicer-mcp`, but ChatGPT's form has separate boxes for the command and its arguments, and the menu path had changed. It now names the path (Settings › Plugins › Add › Add MCP server) and shows each box on its own line with its own Copy: `uvx` in Command to launch, `orcaslicer-mcp` in Arguments. In a translated OrcaSlicer, the path and the box names use the ChatGPT app's own words in that language.
+- The plugin's setup has a link to install uv, which every AI app needs.
+
+## [0.1.23] - 2026-11-11
+The OrcaSlicer MCP plugin 0.2.1 for stock OrcaSlicer 2.5 is attached below (`orcaslicer_mcp_plugin.py`) and on [OrcaCloud](https://cloud.orcaslicer.com/p/16d116a6bc41), which keeps it up to date.
+
+### Added
+- No token needed on the same computer: with `ORCA_API_TOKEN` unset, the connector finds OrcaSlicer by itself, through the file the OrcaSlicer MCP plugin (0.2.1 and later) writes while it runs, or the OrcaSlicer MCP build's own settings. For OrcaSlicer's own settings folder (`--datadir`) set `ORCA_DATADIR`; for OrcaSlicer on another computer set `ORCA_API_URL` and `ORCA_API_TOKEN` as before. The Claude Desktop extension's token field is now optional.
+- `get_config` with `keys` also says what each setting means, with its unit, range and choices, from OrcaSlicer's own tooltips.
+- `set_config` and `apply_and_slice` take `null` for a key to put it back to the value saved in its preset, one setting at a time. Script, G-code and printer-connection settings are never put back this way.
+- The server now sends instructions with its handshake: where to start, which tools explain a setting, how to check a result.
+- `check_printer_match` returns `fix` when the profile's speeds or accelerations go past the printer's Klipper limits: the `set_config` changes that lower just those settings to the limits, for the assistant to offer and apply if you agree. Nozzle size, bed size, temperatures and retraction stay advice, since which side is wrong is your call.
+- `check_profile_physics` reads the printer's start and end G-code (`gcode_scripts`): a fixed temperature where a placeholder would follow the filament, relative positioning left on, no homing, heaters never turned off, moves outside the printable area. Warnings only; scripts that call a printer macro are trusted to do that work.
+- `describe_plate` says whether the G-code was sliced with the settings that are set now (`settings_check`), naming any setting the slice used instead, such as a plate's own bed type, print sequence or spiral vase.
+- With enough recorded prints, `get_slice_status` and `slice_and_wait` give a `forecast`: how long the slice will really take on your printer from start to finish, from how past prints compared with their estimates, per OrcaSlicer version when there are enough of them. `save_gcode` now records the OrcaSlicer version with each slice for this.
+- An agent skill (`skills/orcaslicer-mcp`) that teaches Claude Code, Codex and other agents how to work with these tools. In Claude Code: `/plugin install orcaslicer-mcp --marketplace MaxEllis/orcaslicer-mcp`. Instructions only; it runs no code.
+- The OrcaSlicer MCP plugin helps you connect your AI app. Its panel does it on first run, and the Config tab after that: pick Claude, OpenAI, Cursor, VS Code or another app, then one button per step (the Claude app's extension to download, a command to copy for Claude Code or Codex, a one-click install for Cursor and VS Code). None of it holds the token. When the app first reaches OrcaSlicer, the panel says it is connected.
+- In the OrcaSlicer MCP build, which has the connection and the panel built in, the plugin stays off: one panel, one server, and no permission prompt. Its Config tab says so.
+- The plugin's Config tab says whether an AI app has connected, which one and when, with the assistant access switch beside it. orcaslicer-mcp tells the plugin its AI app's name for this.
+
+### Changed
+- Arguments sent under a name close to a tool's own are read as that argument instead of being dropped or failing the call: `key` for `keys`, `settings` for `changes`, `id` for `object_id`, camelCase names, a single value where a list is expected, and a comma-separated list of keys.
+- `search_settings` ranks everyday settings above advanced ones when they match equally well, so "infill density" finds `sparse_infill_density` first.
+- The plugin keeps loading on an OrcaSlicer build that refuses one of its permission requests; OrcaSlicer then asks the first time it is needed. On a build too old for the plugin, it says which OrcaSlicer it needs.
+- The Claude Desktop extension's token and address fields are optional and empty by default: the connector finds OrcaSlicer's address and port by itself. A new **OrcaSlicer settings folder** field is for an OrcaSlicer started with its own settings folder.
+- The README's setup for VS Code: its `mcp.json` takes the entry under `servers`, not `mcpServers`.
+- orcaslicer-mcp now tells you when your plugin is older than 0.2.1.
+
+## [0.1.22] - 2026-11-11
+
+### Added
+- With the OrcaSlicer MCP plugin 0.2.0 on stock OrcaSlicer, the assistant reads the slice you make with Slice plate. `get_slice_status` gives its time, filament, cost and layer count, and says when a later change has made it out of date. `get_gcode`, `describe_plate` and `save_gcode` work on it too, so the print is recorded for `recall_prints`. The plugin still can't start a slice, see OrcaSlicer's slice warnings or give the per-feature breakdown.
+
+### Changed
+- On the plugin, a tool that needs a slice asks you to press Slice plate in OrcaSlicer instead of naming `slice_and_wait`, which the plugin can't run. `get_slice_warnings` says the plugin can't see warnings, so an empty list means nothing there, and `get_slice_breakdown` says the breakdown needs the OrcaSlicer MCP build.
+- orcaslicer-mcp now tells you when your plugin is older than 0.2.0.
+
+## [0.1.21] - 2026-11-10
+
+### Added
+- Tool replies now tell the assistant what you changed by hand in OrcaSlicer since its last action: settings, presets, objects and plates, and the panel's own undos. The reply carries a `user_changes` note (the first 8 changes, then a count by group) and the full list, so the assistant works from your values instead of overwriting them. It needs an OrcaSlicer MCP build with the change journal (v2.5.0-mcp.16 and later); older builds are left alone.
+- Works with the OrcaSlicer MCP plugin for stock OrcaSlicer 2.5. `get_status` reports `backend: "plugin"` with a note on what the plugin can do; a tool the plugin can't serve says how to do it by hand and that the OrcaSlicer MCP build can do it, and `apply_and_slice`, `edit_preset` and the compare tools refuse up front so nothing is left half done.
+- An OrcaSlicer MCP plugin installed from a downloaded file never updates itself, so orcaslicer-mcp tells you: when the plugin is older than the one released with this version, `get_status` carries `plugin_update`, and the first tool reply of the session carries it once, with where to download the new one (or install it from OrcaCloud to get updates automatically). The plugin itself asks for no network access. The OrcaSlicer MCP build is never flagged; it has its own update notice.
+- `select_preset` takes an optional 1-based `slot` for a filament preset, to set the filament of one extruder or tool on a multi-filament printer without touching the others or discarding unsaved edits. It needs an OrcaSlicer MCP build that lists `preset_slot` (v2.5.0-mcp.16 and later) and refuses on older ones.
+
+### Changed
+- The outcome store and the `save_gcode` G-code folder no longer pick up a shared folder under `~/projects` when one exists. They use `PRINT_OUTCOMES_DIR` when it is set, otherwise `~/.orcaslicer-mcp/outcomes/` (store) and `~/.orcaslicer-mcp/` (G-code). To keep an existing store in another folder, set `PRINT_OUTCOMES_DIR` to it, for the klipper-mcp recorder too.
+- `describe_setting` and `search_settings` now know OrcaSlicer 2.5.0's settings (992, up from 807, built from the 2.4.2 and 2.5.0 sources). A setting added in 2.5 carries `since: "2.5.0"`; `silent_mode`, which 2.5 removed, carries `removed_in: "2.5.0"`.
+- On the OrcaSlicer MCP plugin, a refused action now says what failed and how to do it by hand in OrcaSlicer (press Slice plate and read out the time, Arrange all objects in the toolbar, the save icon beside the preset name), and mentions the OrcaSlicer MCP build after that. `compare_slices` and `compare_settings` refuse up front there, so nothing changes.
+- Refusals made by the connector itself (locked settings, out-of-range values, and on the plugin the actions it can't do) now show in OrcaSlicer's MCP panel too, on builds that have the panel's note route.
+- `get_status` says in words whether it reached the OrcaSlicer MCP build or the plugin, and leaves OrcaSlicer's internal nozzle bookkeeping out of the list of modified settings. `get_printer_status` says first when it falls back to the printer you last used, which may not be the one selected in OrcaSlicer now.
+- Every tool's description now opens with one whole sentence that says when to pick it over a similar tool, and the text below it no longer repeats that sentence.
+- `add_plate` notes that on OrcaSlicer 2.5, adding a 2nd, 5th or 10th plate rearranges the plate grid and clears every plate's slice result.
+
+### Fixed
+- A setting can no longer be changed to a value outside its allowed range. A layer height of -1 used to be applied, and the next slice ran out of memory and closed OrcaSlicer with the project unsaved; 250% infill went through without a word. `set_config`, `apply_and_slice`, `set_object_config`, `edit_preset` and the compare tools now check every value against the setting's own limits first (a percentage by its number, each entry of a list on its own) and refuse with the allowed range. Writing back a value a setting already has is never refused, even when a shipped profile holds it outside the range. When OrcaSlicer refuses a value itself, its own sentence is passed on.
+- When OrcaSlicer can't be reached, the reply asks whether it is open with Preferences > Remote API turned on, or, for the OrcaSlicer MCP plugin, whether the plugin is turned on. When OrcaSlicer runs on another computer, it also asks whether that computer is on and awake. A timeout no longer ends in an empty colon: it says how long it waited and that a dialog may be open in the OrcaSlicer window.
+- One tick is now enough to let the assistant change scripts, custom G-code and printer connection settings: "Allow script, G-code and connection edits" in the OrcaSlicer MCP build's Preferences > Remote API. The connector reads that box from OrcaSlicer, at most a few seconds old, and refuses when it is off or can't be read. A refusal gives one plain step: tick the box, then ask again, or make the change yourself in OrcaSlicer. On the OrcaSlicer MCP plugin, which never allows these settings, it only asks you to make the change in the OrcaSlicer window. `ORCA_MCP_ALLOW_KEYS` still works as an advanced option.
+- A slice result that a later change made out of date is marked as such ("out of date, slice again") by `get_slice_status`, `get_slice_warnings`, `get_slice_breakdown` and `diagnose_plate`.
+- A slice OrcaSlicer won't start now says why, in OrcaSlicer's own words. Without a reason from OrcaSlicer, the reply lists what the profile check finds (a layer height too large for the nozzle, say) instead of "object outside bed". An empty plate says to load a model first, also on `render_plate`, `describe_plate` and the G-code tools.
+- `compare_slices` no longer fills OrcaSlicer's MCP panel with its trial runs: one line such as "Compared 3 options · nothing kept" sums the comparison up. It recommends and stars a variant only when it is at least as good as every other on time, filament and warnings; when they trade off it says "No clear winner: X is fastest, Y is lightest." The differences now add up with the rounded minutes and grams the table shows. If a comparison can't put your settings back, the reply and the panel say which ones.
+- Slice warnings carry OrcaSlicer's sentence next to the code, and the level as a word.
+- Every error has a readable explanation, and none sends you to an HTTP route; a missing file given as a bare name asks for the full path.
+
+### Security
+- Ready for OrcaSlicer 2.5: the config guard also refuses `slicing_pipeline_plugin` (Python plugins that run at each slicing step), `plugins` (the plugins a preset brings with it) and `*_gcodes` lists of G-code such as `imex_mode_gcodes`. `high_precision_gcode`, a 2.5 on/off setting, stays writable.
+
+## [0.1.20] - 2026-11-09
+
+### Added
+- Project files, for fork v2.4.2-mcp.15 and later. `save_project` writes the project `.3mf` as File > Save / Save As does, with no dialog, and refuses to replace an existing file unless `overwrite` is passed. `open_project` opens a saved project with its plates, objects, per-object and per-plate settings, slot presets and colours (`load_model` only imports geometry); `open_recent_project` opens an entry of File > Recent by index; `new_project` starts over, with an optional `name` for the window title. All three take `if_unsaved` (`fail` by default, `save`, `discard`) to answer OrcaSlicer's unsaved-changes prompt from the call, and the open tools take `presets` (`project` or `keep_current`). `get_project` reports the project's name, path, dirty flag and modified preset groups; `get_status` reports `project` as `{name, path, dirty}` on those builds.
+- `list_recent_projects` shows File > Recent with whether each file still exists, and `forget_recent_project` takes an entry (or the whole list) off it. `browse_projects` lists the `.3mf` files in a folder on the OrcaSlicer host. `move_project_file` renames or moves a project file, and the window follows when it is the open project; `delete_project_file` removes one from disk (permanently) and from the recent list, never the open project's own file.
+- OrcaSlicer guards the project routes with two Preferences > Remote API boxes, both off by default. Without "Allow deleting and replacing project files" it refuses `delete_project_file` and any save or move that would replace an existing file. Without "Allow script, G-code and connection edits" it refuses to open a project that brings its own scripts, custom G-code or printer connection, and lists those keys. The tools pass the reason, the file and the keys back with a hint, and `save_project` and `move_project_file` are marked destructive because `overwrite` can replace a file.
+
+### Fixed
+- `load_model` on a path that does not exist now says `file_not_found` with the path, instead of claiming the build lacks model loading. Works with older fork builds too.
+
+## [0.1.19] - 2026-11-03
+
+### Added
+- CANVAS slot tools for the Elegoo Centauri Carbon 2: `get_printer_slots` (trays, status, material, colour), `get_filament_slot_mapping` and `set_filament_slot_mapping` (which tray each filament of the current plate prints from). Setting a mapping starts nothing; the Send dialog opens pre-filled. Needs fork v2.4.2-mcp.14 or later.
+
+## [0.1.18] - 2026-11-02
+
+### Fixed
+- Claude Desktop could not connect: it showed the extension as failed with "connection is serving the 2026-07-28 protocol; the initialize handshake is not accepted" and no tools. The MCP SDK (2.2 and later) lets the first request on a stdio connection lock its protocol era, and a client that opens with a `server/discover` probe and then sends `initialize` on the same connection was refused. On stdio the server now answers a `server/discover` probe that arrives before any other request with METHOD_NOT_FOUND (-32601), the reply the specification tells clients to treat as "fall back to the handshake", so `initialize` opens the connection. Clients that only speak the handshake are unaffected, and clients in auto mode fall back as designed. Set `ORCA_MCP_PROTOCOL=auto` to hand the connection to the SDK untouched. Verified against Claude Desktop 4.4212 on macOS: its era probe, chat connection and local agent mode connection all complete the handshake and list the tools.
+- `anyio` is now a declared dependency (the stdio transport imports it directly; before it arrived only through the MCP SDK).
+
 
 ## [0.1.17] - 2026-10-12
 
@@ -85,7 +211,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ### Changed
 - `httpx` is now capped below 1.0. Its 1.0 pre-releases have no `AsyncClient`, so an install that resolved one (for example with pre-releases allowed) failed on the first printer or slicer call; the cap keeps a future 1.0 release from doing the same to fresh installs.
-- The outcome store is now owned by this project (klipper-mcp carries a copy) and works without klipper-mcp. `save_gcode` always records the slice, with OrcaSlicer's time and filament estimates, and `list_print_history` adds finished prints with the printer's failure reason. New default location `~/.orcaslicer-mcp/outcomes/`; an existing `~/projects/_shared/print-outcomes/` is still used. The store upgrades itself in place by adding columns, so older versions can still read it.
+- The outcome store is now owned by this project (klipper-mcp carries a copy) and works without klipper-mcp. `save_gcode` always records the slice, with OrcaSlicer's time and filament estimates, and `list_print_history` adds finished prints with the printer's failure reason. New default location `~/.orcaslicer-mcp/outcomes/`. The store upgrades itself in place by adding columns, so older versions can still read it.
 - `recall_prints` rows include the failure reason and OrcaSlicer's estimates. `duration_s` is Moonraker's whole job time, including heating up and any pauses, so beside the estimates it overstates an overrun; `list_print_history` compares the print time, which leaves both out, with the estimate. `filament_g` is the G-code file's own estimate, because printers report filament in millimetres, not grams.
 - A new outcome store's `printer_id` column defaults to `unknown`, the same value the store module uses when a caller passes no printer. Existing stores keep the default they were created with; every write names its printer anyway.
 
@@ -136,7 +262,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [0.1.10] - 2026-09-07
 
 ### Added
-- `save_gcode`: save the last slice's G-code into the shared print-outcomes folder and record the slice (model, geometry, settings) so the companion klipper-mcp can join the real print result back to it.
+- `save_gcode`: save the last slice's G-code into a local gcode folder and record the slice (model, geometry, settings) so the companion klipper-mcp can join the real print result back to it.
 - `recall_prints`: before slicing, see how past prints of the current model went (result, your verdict, the settings used). Inert without the klipper-mcp outcome store.
 - Slicing prompts now consult `recall_prints` first and end with `save_gcode`.
 
