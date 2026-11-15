@@ -316,7 +316,7 @@ _ERROR_DETAILS = {
     "invalid_type": "The preset type must be print, filament or printer.",
     "invalid_keys": "OrcaSlicer refused some of the values; `errors` names each one, and nothing was saved.",
     "no_project_path": "The project has never been saved, so it has no file yet: pass a name to save_project.",
-    "unsaved_changes": "The open project has unsaved changes; pass if_unsaved='save' or 'discard' deliberately, after asking the user.",
+    "unsaved_changes": "The open project has unsaved changes; after asking the user, pass discard_unsaved=True to open_project or if_unsaved='save'/'discard' to new_project, or save_project first.",
     "exists": "A file already exists at that path; pick another name, or pass overwrite=True if the user agrees.",
     "plate_locked": "That plate is locked in OrcaSlicer; the user can unlock it there.",
     "last_plate": "The only plate cannot be deleted.",
