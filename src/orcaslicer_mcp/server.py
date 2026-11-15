@@ -2892,7 +2892,7 @@ async def _sync_one_compare(c, g, ptype: str, name: str, gestor_entry: dict | No
 def _unsaved_in(status: dict, ptype: str, name: str) -> list:
     selected = (status.get("presets") or {}).get(ptype)
     names = selected if isinstance(selected, list) else [selected]
-    return list((status.get("modified") or {}).get(ptype) or []) if name in names else []
+    return _visible_keys((status.get("modified") or {}).get(ptype)) if name in names else []
 
 
 def _unsafe_file_name(name: str) -> bool:
@@ -2968,7 +2968,8 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
 
 
 def _any_unsaved(status: dict) -> dict:
-    return {t: list(v) for t, v in (status.get("modified") or {}).items() if v}
+    visible = {t: _visible_keys(v) for t, v in (status.get("modified") or {}).items()}
+    return {t: v for t, v in visible.items() if v}
 
 
 def _backup_dir() -> Path:
@@ -2986,9 +2987,17 @@ def _write_pc_backup(ptype: str, name: str, stored: dict) -> str:
     return str(path)
 
 
-async def _restore_selection(c, before: dict) -> list:
+async def _filament_tab(c) -> str | None:
+    try:
+        return ((await c.get_filaments()).get("tab") or {}).get("preset")
+    except ApiError:
+        return None
+
+
+async def _restore_selection(c, before: dict, filament_tab: str | None = None) -> list:
     """Put back the presets that were selected before the pull, printer first because
-    selecting a printer can switch the other groups."""
+    selecting a printer can switch the other groups. Selecting a filament without a slot
+    moves only the Filament tab, never a sidebar slot, so the tab is put back last."""
     restored = []
     for ptype in ("printer", "print"):
         now = (await c.get_status()).get("presets") or {}
@@ -3002,6 +3011,9 @@ async def _restore_selection(c, before: dict) -> list:
             if slot < len(now) and now[slot] != name:
                 await c.select_preset("filament", name, slot=slot)
                 restored.append({"type": "filament", "name": name, "slot": slot})
+    if filament_tab and await _filament_tab(c) != filament_tab:
+        await c.select_preset("filament", filament_tab)
+        restored.append({"type": "filament", "name": filament_tab, "tab": True})
     return restored
 
 
@@ -3090,6 +3102,7 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
     if unsaved:
         return row | {"error": "unsaved_changes", "modified": unsaved,
                       "hint": "save or discard the edits in OrcaSlicer first; selecting a preset would lose them"}
+    tab = await _filament_tab(c) if ptype == "filament" else None
     if stored:
         try:
             row["backup"] = _write_pc_backup(ptype, name, stored)
@@ -3097,7 +3110,7 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
             return row | {"error": "backup_failed", "detail": str(e)}
     failure = await _apply_and_save(c, ptype, name, start_name, start, changes)
     try:
-        row["reselected"] = await _restore_selection(c, status.get("presets") or {})
+        row["reselected"] = await _restore_selection(c, status.get("presets") or {}, tab)
     except ApiError as e:
         row["reselect_error"] = str(e)
     if failure:

@@ -166,6 +166,34 @@ def _number_or_text(text: str):
     return text if number != number else number
 
 
+_VARIANT_KEY = "filament_extruder_variant"
+
+
+def same_value(key: str, a, b) -> bool:
+    """Equal as effective settings. OrcaSlicer 2.5 keeps a filament vector per extruder variant
+    where 2.4 kept one item, so one item matches a vector repeating it, and a one-item variant
+    list matches a variant list it starts."""
+    ca, cb = canonical(key, a), canonical(key, b)
+    if ca == cb:
+        return True
+    if not (isinstance(ca, tuple) and isinstance(cb, tuple)) or 1 not in (len(ca), len(cb)):
+        return False
+    one, many = (ca, cb) if len(ca) == 1 else (cb, ca)
+    if not many:
+        return False
+    if key == _VARIANT_KEY:
+        return many[0] == one[0]
+    return all(item == one[0] for item in many)
+
+
+def fit_to_current(key: str, target, current):
+    """A one-item file vector written over a per-variant vector keeps the slicer's length."""
+    if (key != _VARIANT_KEY and isinstance(target, list) and len(target) == 1
+            and isinstance(current, list) and len(current) > 1):
+        return target * len(current)
+    return target
+
+
 @dataclass
 class Difference:
     key: str
@@ -226,14 +254,15 @@ def target_changes(gestor_file: dict, start_config: dict, parent_config: dict) -
         else:
             continue
         current_value = None if current is None else from_api(key, current)
-        if canonical(key, target) != canonical(key, current_value):
-            changes[key] = to_api(key, target)
+        if not same_value(key, target, current_value):
+            changes[key] = to_api(key, fit_to_current(key, target, current_value))
     return changes
 
 
 def compare(pc_config: dict, gestor_file: dict, gestor_parent: dict | None) -> Comparison:
     """Effective values on both sides: the PC's full config against the Gestor file laid over
-    its parent as read from the PC (both run OrcaSlicer 2.4.2, so system presets match).
+    its parent as read from the PC (system presets match; a 2.5 PC holds filament vectors per
+    extruder variant where the Gestor's 2.4 files hold one item, which same_value accepts).
     Without that parent only the keys the Gestor file states are compared."""
     result = Comparison(parent_known=gestor_parent is not None)
     pc_inherits = pc_config.get("inherits", "") or ""
@@ -253,6 +282,6 @@ def compare(pc_config: dict, gestor_file: dict, gestor_parent: dict | None) -> C
             gestor_value = from_api(key, parent[key])
         else:
             gestor_value = None
-        if canonical(key, pc_value) != canonical(key, gestor_value):
+        if not same_value(key, pc_value, gestor_value):
             result.differences.append(Difference(key, pc_value, gestor_value))
     return result

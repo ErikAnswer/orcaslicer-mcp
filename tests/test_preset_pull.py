@@ -32,6 +32,7 @@ class FakeOrca:
         self.presets = {k: dict(v) for k, v in presets.items()}
         self.modified = modified or {}
         self.selected = {"print": "p", "printer": "q", "filament": [selected, "Other 2"]}
+        self.tab = selected
         self.edited: dict = {}
         self.edited_from: str | None = None
         self.put_errors: dict = {}
@@ -47,6 +48,9 @@ class FakeOrca:
                         "filaments": list(self.selected["filament"])},
             "modified": {"print": [], "printer": [], "filament": self._edited_keys()} | self.modified}))
         respx.put(f"{BASE}/preset").mock(side_effect=self._select)
+        respx.get(f"{BASE}/filaments").mock(side_effect=lambda r: httpx.Response(200, json={
+            "filaments": [{"index": i, "preset": n} for i, n in enumerate(self.selected["filament"])],
+            "tab": {"preset": self.tab, "slot": None}}))
         respx.put(f"{BASE}/config").mock(side_effect=self._put)
         respx.post(f"{BASE}/preset/save").mock(side_effect=self._save)
 
@@ -64,10 +68,11 @@ class FakeOrca:
     def _select(self, request):
         body = json.loads(request.read())
         self.writes.append(("select", body))
-        slot = body.get("slot", 0)
-        self.selected["filament"][slot] = body["name"]
-        if "slot" not in body:
-            self.edited = dict(self.presets[body["name"]])
+        if "slot" in body:
+            self.selected["filament"][body["slot"]] = body["name"]
+        else:
+            self.tab = body["name"]
+            self.edited = dict(self.presets.get(body["name"], {}))
             self.edited_from = body["name"]
         return httpx.Response(200, json={"selected": body["name"]})
 
@@ -84,7 +89,7 @@ class FakeOrca:
         inherits = self.edited_from if self.edited_from.endswith("@System") else self.edited.get("inherits", "")
         self.presets[body["name"]] = self.edited | {"inherits": inherits,
                                                     "filament_settings_id": f"\"{body['name']}\""}
-        self.selected["filament"][0] = body["name"]
+        self.tab = body["name"]
         self.edited, self.edited_from = dict(self.presets[body["name"]]), body["name"]
         return httpx.Response(200, json={"saved": body["name"]})
 
@@ -152,7 +157,7 @@ async def test_pull_writes_backs_up_and_ends_the_same(both):
     assert pc.writes[2][0] == "save" and pc.writes[2][1]["name"] == NAME
     backup = json.loads(open(row["backup"]).read())
     assert backup["config"]["pressure_advance"] == "0.036"
-    assert row["reselected"] == [{"type": "filament", "name": "Other", "slot": 0}]
+    assert row["reselected"] == [{"type": "filament", "name": "Other", "tab": True}]
     again = (await srv.sync_presets("compare", [NAME]))["presets"][0]
     assert again["status"] == "same"
 
@@ -258,7 +263,7 @@ async def test_a_failed_save_still_restores_the_selection(both):
     _gestor()
     row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
     assert row["error"] == "write_failed" and "backup" in row
-    assert row["reselected"] == [{"type": "filament", "name": "Other", "slot": 0}]
+    assert row["reselected"] == [{"type": "filament", "name": "Other", "tab": True}]
     assert pc.presets[NAME] == PC
 
 
@@ -371,3 +376,43 @@ async def test_restore_selection_leaves_matching_and_missing_slots_alone():
     restored = await srv._restore_selection(c, before)
     assert restored == [{"type": "filament", "name": "B", "slot": 1}]
     assert c.selects == [("filament", "B", 1)]
+
+
+def test_one_item_vectors_match_the_per_variant_vectors_of_orcaslicer_2_5():
+    variants = ["Direct Drive Standard", "Direct Drive High Flow", "Bowden Standard"]
+    assert ps.same_value("nozzle_temperature", "230,230,230", ["230"])
+    assert ps.same_value("filament_extruder_variant", variants, ["Direct Drive Standard"])
+    assert not ps.same_value("filament_extruder_variant", variants, ["Bowden Standard"])
+    assert not ps.same_value("nozzle_temperature", "230,235,230", ["230"])
+    assert not ps.same_value("nozzle_temperature", "230,230", ["230", "235", "230"])
+    assert not ps.same_value("nozzle_temperature", "", ["230"])
+    pc = PC | {"nozzle_temperature": "210,210,210", "pressure_advance": "0.036,0.036,0.036",
+               "filament_extruder_variant": '"Direct Drive Standard";"Direct Drive High Flow";"Bowden Standard"'}
+    file = GESTOR_FILE | {"filament_extruder_variant": ["Direct Drive Standard"]}
+    comparison = ps.compare(pc, file, PARENT)
+    assert {d.key for d in comparison.differences} == {"filament_flow_ratio", "pressure_advance"}
+    changes = ps.target_changes(file, pc, PARENT)
+    assert changes == {"filament_flow_ratio": "0.98", "pressure_advance": "0.025,0.025,0.025"}
+
+
+@respx.mock
+async def test_nozzle_bookkeeping_of_orcaslicer_2_5_is_not_an_unsaved_edit(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT},
+                  modified={"printer": ["extruder_nozzle_stats#0", "extruder_nozzle_stats#1"]})
+    pc.install()
+    _gestor()
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["written"] is True and row["verified"] is True
+
+
+@respx.mock
+async def test_the_filament_tab_goes_back_and_the_sidebar_slots_stay(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected="Slot 1")
+    pc.selected["filament"] = ["Slot 1", "Slot 2", NAME, "Slot 4"]
+    pc.tab = "Slot 2"
+    pc.install()
+    _gestor()
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["verified"] is True
+    assert pc.selected["filament"] == ["Slot 1", "Slot 2", NAME, "Slot 4"] and pc.tab == "Slot 2"
+    assert row["reselected"] == [{"type": "filament", "name": "Slot 2", "tab": True}]
