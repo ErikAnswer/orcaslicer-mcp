@@ -313,6 +313,7 @@ async def test_hold_lost_answer_with_job_still_queued_is_not_held():
     _orca_ok()
     out = await srv.send_to_queue(hold=True)
     assert out["held"] is False and "instead of held" in out["hold_error"]
+    assert "the hold request failed" in out["hold_error"] and "down" in out["hold_error"]
 
 
 @respx.mock

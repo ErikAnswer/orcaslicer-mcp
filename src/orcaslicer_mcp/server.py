@@ -1531,11 +1531,13 @@ async def _hold_queue_job(g: GestorClient, job: dict) -> dict:
         return job
     if job.get("status") != "queued":
         raise GestorError(f"the job is {job.get('status')!r}, only a queued job can be held")
+    request_error = ""
     try:
         await g.toggle_hold(job["id"])
     except GestorError as e:
         if e.status is not None:
             raise
+        request_error = f"; the hold request failed: {e}"
     try:
         pending = _queue_pending(await g.queue())
     except GestorError as e:
@@ -1543,9 +1545,9 @@ async def _hold_queue_job(g: GestorClient, job: dict) -> dict:
     for current in pending:
         if current.get("id") == job["id"]:
             if current.get("status") != "held":
-                raise GestorError(f"the job ended up {current.get('status')!r} instead of held")
+                raise GestorError(f"the job ended up {current.get('status')!r} instead of held{request_error}")
             return current
-    raise GestorError("the job left the queue before it could be held")
+    raise GestorError(f"the job left the queue before it could be held{request_error}")
 
 
 async def _confirm_queue_job(g: GestorClient, before: set[str], hold: bool) -> dict:
