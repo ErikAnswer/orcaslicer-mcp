@@ -1,5 +1,6 @@
 """Convert a preset read from the slicer API into OrcaSlicer's own user-preset file format
-and compare it with the copy kept by the home print queue (Gestor 3D).
+and compare it with the copy kept by the home print queue (Gestor 3D); and turn such a file
+back into the text the slicer API takes.
 
 The API returns every option as ConfigBase::opt_serialize text. Orca's save_to_json writes
 plain strings for coString options, arrays of per-item strings for vector options and the
@@ -95,6 +96,37 @@ def from_api(key: str, serialized: str) -> str | list[str]:
     return serialized
 
 
+def escape_string(text: str) -> str:
+    """Orca's escape_string_cstyle."""
+    return (text.replace("\\", "\\\\").replace('"', '\\"')
+            .replace("\r", "\\r").replace("\n", "\\n"))
+
+
+def escape_strings(items: list[str]) -> str:
+    """Orca's escape_strings_cstyle, the inverse of unescape_strings."""
+    quoted = []
+    for item in items:
+        complex_item = (len(items) == 1 and item == "") or any(c in item for c in ' \t;\\"\r\n')
+        quoted.append('"' + escape_string(item) + '"' if complex_item else item)
+    return ";".join(quoted)
+
+
+def to_api(key: str, value) -> str:
+    """The text the slicer API takes for a value as a preset file holds it."""
+    kind = option_type(key)
+    if isinstance(value, bool):
+        return "1" if value else "0"
+    if isinstance(value, list):
+        items = [str(v) for v in value]
+        if kind == "coStrings":
+            return escape_strings(items)
+        return ("#" if kind == "coPointsGroups" else ",").join(items)
+    text = str(value)
+    if kind == "coString" and key not in _RAW_STRING_EXCEPTIONS:
+        return escape_string(text)
+    return text
+
+
 def canonical(key: str, value) -> tuple | str | None:
     """Comparable form of a file value; a vector written as one string is split first."""
     if value is None:
@@ -155,6 +187,28 @@ def build_file(ptype: str, name: str, pc_config: dict, parent_config: dict | Non
 
 def dump_file(preset: dict) -> bytes:
     return (json.dumps(preset, indent="\t", sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def target_changes(gestor_file: dict, start_config: dict, parent_config: dict) -> dict:
+    """What to write over start_config (the preset selected in the slicer) so it holds the
+    Gestor file laid over parent_config, as API text. Keys whose current value is a redacted
+    credential are left alone, and saving sets the settings ids."""
+    skip = FILE_ONLY_KEYS | set(SETTINGS_ID_KEY.values())
+    changes = {}
+    for key in sorted((set(gestor_file) | set(start_config)) - skip):
+        current = start_config.get(key)
+        if current is not None and REDACTED in str(current):
+            continue
+        if key in gestor_file:
+            target = gestor_file[key]
+        elif key in parent_config:
+            target = from_api(key, parent_config[key])
+        else:
+            continue
+        current_value = None if current is None else from_api(key, current)
+        if canonical(key, target) != canonical(key, current_value):
+            changes[key] = to_api(key, target)
+    return changes
 
 
 def compare(pc_config: dict, gestor_file: dict, gestor_parent: dict | None) -> Comparison:

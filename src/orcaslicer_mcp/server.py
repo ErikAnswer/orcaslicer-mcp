@@ -23,7 +23,7 @@ from .breakdown import build_breakdown
 from .compare import compute_comparison
 from .gestor import GestorClient, GestorError, load_gestor_config
 from . import preset_sync as _psync
-from .guard import allow_override_warnings
+from .guard import allow_override_warnings, sensitive_keys
 from . import notes as _notes
 from . import outcomes as _outcomes
 import hashlib
@@ -1469,6 +1469,144 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
     return row
 
 
+def _any_unsaved(status: dict) -> dict:
+    return {t: list(v) for t, v in (status.get("modified") or {}).items() if v}
+
+
+def _backup_dir() -> Path:
+    default = Path.home() / ".cache" / "orcaslicer-mcp" / "preset-backups"
+    return Path(os.environ.get("ORCA_PRESET_BACKUP_DIR") or default)
+
+
+def _write_pc_backup(ptype: str, name: str, stored: dict) -> str:
+    folder = _backup_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+    safe = re.sub(r"[^A-Za-z0-9._@ -]", "_", name).strip(" .") or "preset"
+    path = folder / f"{stamp}-{ptype}-{safe}.json"
+    path.write_text(json.dumps(stored, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    return str(path)
+
+
+async def _restore_selection(c, before: dict) -> list:
+    """Put back the presets that were selected before the pull, printer first because
+    selecting a printer can switch the other groups."""
+    restored = []
+    for ptype in ("printer", "print"):
+        now = (await c.get_status()).get("presets") or {}
+        if before.get(ptype) and now.get(ptype) != before[ptype]:
+            await c.select_preset(ptype, before[ptype])
+            restored.append({"type": ptype, "name": before[ptype]})
+    wanted = before.get("filament")
+    now = ((await c.get_status()).get("presets") or {}).get("filament")
+    if isinstance(wanted, list) and isinstance(now, list):
+        for slot, name in enumerate(wanted):
+            if slot < len(now) and now[slot] != name:
+                await c.select_preset("filament", name, slot=slot)
+                restored.append({"type": "filament", "name": name, "slot": slot})
+    return restored
+
+
+async def _apply_and_save(c, ptype: str, name: str, start_name: str, start: dict,
+                          changes: dict) -> dict | None:
+    """On failure the selected preset is put back to its stored values, so no half-applied
+    edits stay behind even when it is the preset that was already selected."""
+    put = False
+    try:
+        await c.select_preset(ptype, start_name)
+        if changes:
+            put = True
+            errors = (await c.put_config(changes)).get("errors")
+            if errors:
+                raise Validation("the slicer refused some keys", errors)
+        await c.save_preset(ptype, name)
+        return None
+    except Validation as e:
+        failure = {"error": "invalid_keys", "errors": e.errors}
+    except ApiError as e:
+        failure = {"error": "write_failed", "detail": str(e)}
+    if put:
+        try:
+            await c.restore_config({k: start[k] for k in changes if k in start})
+            failure["edits_discarded"] = True
+        except ApiError as e:
+            failure |= {"edits_discarded": False, "discard_error": str(e),
+                        "hint": "discard the unsaved edits of this preset in OrcaSlicer"}
+    return failure
+
+
+async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_run: bool) -> dict:
+    row: dict = {"type": ptype, "name": name}
+    if gestor_entry is None:
+        return row | {"error": "not_in_gestor"}
+    gestor_file = json.loads(await g.download(gestor_entry["path"]))
+    if not isinstance(gestor_file, dict):
+        raise ValueError("not a JSON object")
+    try:
+        stored = await c.get_preset_config(ptype, name)
+    except NotFound:
+        stored = None
+    if stored and stored.get("system"):
+        return row | {"error": "system_preset", "detail": "a system preset of the PC has this name"}
+    inherits = gestor_file.get("inherits", "") or ""
+    parent = await _parent_config(c, ptype, inherits)
+    if parent is None:
+        return row | {"error": "unknown_base", "inherits": inherits,
+                      "detail": "the PC's OrcaSlicer has no preset with the name this file inherits from"}
+    pc = stored.get("config", {}) if stored else None
+    if pc is not None and (pc.get("inherits", "") or "") == inherits:
+        start_name, start = name, pc
+    elif inherits:
+        start_name, start = inherits, parent
+    else:
+        return row | {"error": "no_base",
+                      "detail": "the Gestor file inherits from nothing and the PC has no preset with this name to start from"}
+    if pc is not None:
+        comparison = _psync.compare(pc, gestor_file, parent)
+        if not comparison.differences:
+            return row | {"action": "none", "status": "same"}
+        row |= {"action": "replace"} | _diff_rows(comparison)
+    else:
+        row |= {"action": "create"}
+    changes = _psync.target_changes(gestor_file, start, parent)
+    blocked = set(sensitive_keys(changes))
+    if blocked:
+        row["skipped_keys"] = [{"key": k, "gestor": gestor_file.get(k),
+                                "pc_keeps": _psync.from_api(k, start[k]) if k in start else None}
+                               for k in sorted(blocked)]
+        row["skipped_hint"] = ("protected keys (custom G-code, scripts, printer connection) are never "
+                               "written by the MCP; change them by hand in OrcaSlicer if needed")
+    changes = {k: v for k, v in changes.items() if k not in blocked}
+    row["start_from"] = start_name
+    row["keys_to_write"] = len(changes)
+    if dry_run:
+        return row | {"dry_run": True}
+    status = await c.get_status()
+    unsaved = _any_unsaved(status)
+    if unsaved:
+        return row | {"error": "unsaved_changes", "modified": unsaved,
+                      "hint": "save or discard the edits in OrcaSlicer first; selecting a preset would lose them"}
+    if stored:
+        try:
+            row["backup"] = _write_pc_backup(ptype, name, stored)
+        except OSError as e:
+            return row | {"error": "backup_failed", "detail": str(e)}
+    failure = await _apply_and_save(c, ptype, name, start_name, start, changes)
+    try:
+        row["reselected"] = await _restore_selection(c, status.get("presets") or {})
+    except ApiError as e:
+        row["reselect_error"] = str(e)
+    if failure:
+        return row | failure
+    after = _psync.compare((await c.get_preset_config(ptype, name)).get("config", {}), gestor_file, parent)
+    left = [d.key for d in after.differences if d.key not in blocked]
+    row["written"] = True
+    row["verified"] = not left
+    if left:
+        row["still_different"] = left[:_DIFF_LIMIT]
+    return row
+
+
 def _match_gestor(entries: list[dict], ptype: str, name: str) -> dict | None:
     kind = _psync.GESTOR_KIND[ptype]
     return next((e for e in entries if e.get("kind") == kind and e.get("name") == name), None)
@@ -1476,22 +1614,28 @@ def _match_gestor(entries: list[dict], ptype: str, name: str) -> dict | None:
 
 @mcp.tool()
 async def sync_presets(
-    direction: Annotated[Literal["compare", "pc_to_gestor"], Field(description="'compare' only reads both sides; 'pc_to_gestor' writes the PC's saved presets into the Gestor 3D (home print queue) used by its headless slicing.")] = "compare",
-    names: Annotated[list[str] | None, Field(description="User preset names. Required for pc_to_gestor; for compare, omit to compare every user preset on the PC and every preset on the Gestor.")] = None,
+    direction: Annotated[Literal["compare", "pc_to_gestor", "gestor_to_pc"], Field(description="'compare' only reads both sides; 'pc_to_gestor' writes the PC's saved presets into the Gestor 3D (home print queue) used by its headless slicing; 'gestor_to_pc' writes the Gestor 3D presets into the PC's OrcaSlicer.")] = "compare",
+    names: Annotated[list[str] | None, Field(description="User preset names. Required for pc_to_gestor and gestor_to_pc; for compare, omit to compare every user preset on the PC and every preset on the Gestor.")] = None,
     type: Annotated[Literal["print", "filament", "printer"] | None, Field(description="Restrict to one preset group; needed only when a name exists in more than one group.")] = None,
-    dry_run: Annotated[bool, Field(description="pc_to_gestor only: True (default) shows what would be written; pass False to write.")] = True,
+    dry_run: Annotated[bool, Field(description="pc_to_gestor and gestor_to_pc: True (default) shows what would be written; pass False to write.")] = True,
 ) -> dict:
     """Compare the user presets of the OrcaSlicer on the PC with the copies the Gestor 3D keeps
-    for its own slicing (autoslice and Laminador), and copy PC presets there. Values are compared
+    for its own slicing (autoslice and Laminador), and copy presets either way. Values are compared
     as effective settings (parent preset plus overrides), key by key; status is same, different,
     only_pc or only_gestor. pc_to_gestor sends the SAVED preset, written like OrcaSlicer's own
     export (only what differs from its parent, with inherits). It refuses a preset with unsaved
     edits in the PC, never sends system presets and never writes redacted credentials. Before
     replacing a Gestor copy it moves the old one to the Gestor's trash, from where it can be
-    restored (and restores it if the upload fails). Nothing changes in the PC's OrcaSlicer.
-    Run with dry_run=True first and show the user the differences."""
-    if direction == "pc_to_gestor" and not names:
-        return {"error": "names_required", "detail": "name the presets to send; pc_to_gestor never sends everything"}
+    restored (and restores it if the upload fails); that direction changes nothing in the PC.
+    gestor_to_pc selects the file's parent preset in the PC (or the PC's own copy when it has the
+    same parent), applies the file's settings and saves it under its name, then selects again what
+    was selected before. It refuses while any preset group has unsaved edits in the PC (selecting
+    would discard them), saves a JSON copy of the PC's previous version in
+    ~/.cache/orcaslicer-mcp/preset-backups/ first, and reports instead of writing the protected
+    keys (custom G-code, scripts, printer connection). Run with dry_run=True first and show the
+    user the differences."""
+    if direction != "compare" and not names:
+        return {"error": "names_required", "detail": f"name the presets to copy; {direction} never copies everything"}
     types = [type] if type else list(_PRESET_TYPES)
     try:
         async with _client() as c, GestorClient(load_gestor_config()) as g:
@@ -1511,15 +1655,20 @@ async def sync_presets(
                 targets = sorted({(t, n) for t in types for n in pc_names[t]}
                                  | {(t, e["name"]) for t in types for e in gestor_entries
                                     if e.get("kind") == _psync.GESTOR_KIND[t]})
-            status = await c.get_status() if direction == "pc_to_gestor" else {}
+            status = await c.get_status() if direction != "compare" else {}
+            if direction == "gestor_to_pc" and _any_unsaved(status):
+                return {"error": "unsaved_changes", "modified": _any_unsaved(status),
+                        "hint": "save or discard the edits in OrcaSlicer first; nothing was changed"}
             results = []
             for t, n in targets:
                 entry = _match_gestor(gestor_entries, t, n)
                 try:
                     if direction == "compare":
                         results.append(await _sync_one_compare(c, g, t, n, entry))
-                    else:
+                    elif direction == "pc_to_gestor":
                         results.append(await _push_one(c, g, t, n, entry, status, dry_run))
+                    else:
+                        results.append(await _pull_one(c, g, t, n, entry, dry_run))
                 except GestorError as e:
                     results.append({"type": t, "name": n, "error": "gestor_error",
                                     "status": e.status, "detail": str(e)})
