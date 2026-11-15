@@ -269,3 +269,37 @@ def test_a_bad_gestor_timeout_is_a_clear_error(monkeypatch):
     monkeypatch.setenv("ORCA_GESTOR_TIMEOUT", "soon")
     with pytest.raises(GestorError):
         load_gestor_config()
+
+
+@respx.mock
+async def test_a_trash_without_id_stops_before_uploading(both):
+    _mock_pc()
+    trash, upload, _ = _mock_gestor()
+    trash.mock(return_value=httpx.Response(201, json={"entry": {}}))
+    row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
+    assert row["error"] == "backup_unconfirmed" and upload.call_count == 0
+
+
+@respx.mock
+async def test_a_stale_token_is_refreshed_once(both):
+    _mock_pc()
+    _, upload, _ = _mock_gestor()
+    upload.mock(side_effect=[httpx.Response(403, json={"error": "La sesión ha caducado."}),
+                             httpx.Response(201, json={"preset": {"path": "SM PLA - White.json"}})])
+    row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
+    assert row["written"] == "SM PLA - White.json" and upload.call_count == 2
+
+
+@respx.mock
+async def test_a_standalone_preset_compares_every_pc_key(both):
+    standalone = {"inherits": "", "filament_settings_id": "\"SM PLA - White\"", "nozzle_temperature": "210",
+                  "filament_type": "PLA"}
+    respx.get(f"{BASE}/presets").mock(return_value=httpx.Response(200, json={
+        "filament": [{"name": "SM PLA - White", "system": False}], "print": [], "printer": []}))
+    respx.post(f"{BASE}/preset/config").mock(return_value=httpx.Response(200, json={
+        "name": "SM PLA - White", "system": False, "config": standalone}))
+    _mock_gestor(file={"name": "SM PLA - White", "inherits": "", "filament_settings_id": ["SM PLA - White"],
+                       "nozzle_temperature": ["210"]})
+    row = (await srv.sync_presets())["presets"][0]
+    assert row["status"] == "different" and "note" not in row
+    assert row["differences"] == [{"key": "filament_type", "pc": ["PLA"], "gestor": None}]

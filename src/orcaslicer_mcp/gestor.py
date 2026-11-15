@@ -73,18 +73,28 @@ class GestorClient:
             raise GestorError("the Gestor 3D did not hand out a mutation token")
         return {"X-Cad3d-Token": self._token}
 
+    async def _mutate(self, path: str, extra_headers: dict | None = None, **kwargs) -> httpx.Response:
+        """The token belongs to the Gestor process and changes when it restarts: on 403 fetch a
+        fresh one and retry once."""
+        for attempt in (1, 2):
+            headers = await self._mutation_headers() | (extra_headers or {})
+            try:
+                return await self._send("POST", path, headers=headers, **kwargs)
+            except GestorError as e:
+                if e.status != 403 or attempt == 2:
+                    raise
+                self._token = None
+        raise AssertionError("unreachable")
+
     async def trash(self, path: str) -> dict:
-        resp = await self._send("POST", "/api/trash", json={"root": "presets", "path": path},
-                                headers=await self._mutation_headers())
-        return resp.json().get("entry", {})
+        resp = await self._mutate("/api/trash", json={"root": "presets", "path": path})
+        return resp.json().get("entry") or {}
 
     async def restore(self, entry_id: str) -> dict:
-        resp = await self._send("POST", "/api/restore", json={"id": entry_id},
-                                headers=await self._mutation_headers())
+        resp = await self._mutate("/api/restore", json={"id": entry_id})
         return resp.json().get("restored", {})
 
     async def upload(self, filename: str, content: bytes) -> dict:
-        headers = await self._mutation_headers() | {"Content-Type": "application/json"}
-        resp = await self._send("POST", "/api/preset-upload", params={"filename": filename},
-                                content=content, headers=headers)
+        resp = await self._mutate("/api/preset-upload", {"Content-Type": "application/json"},
+                                  params={"filename": filename}, content=content)
         return resp.json().get("preset", {})

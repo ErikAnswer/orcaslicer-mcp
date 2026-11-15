@@ -1209,7 +1209,7 @@ def _diff_rows(comparison) -> dict:
 
 async def _parent_config(c, ptype: str, name: str) -> dict | None:
     if not name:
-        return None
+        return {}
     try:
         return (await c.get_preset_config(ptype, name)).get("config", {})
     except NotFound:
@@ -1275,10 +1275,14 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
         if await g.download(gestor_entry["path"]) != existing_raw:
             return row | {"error": "gestor_changed", "detail": "the Gestor copy changed while comparing; run again"}
         backup = await g.trash(gestor_entry["path"])
+        if not backup.get("id"):
+            return row | {"error": "backup_unconfirmed",
+                          "detail": "the Gestor moved its copy to the trash but returned no trash id, so nothing was uploaded",
+                          "hint": "restore the previous copy from the Gestor 3D trash (Papelera) and run again"}
     try:
         uploaded = await g.upload(filename, content)
     except GestorError as e:
-        if not (backup and backup.get("id")):
+        if backup is None:
             return row | {"error": "upload_failed", "detail": str(e)}
         try:
             await g.restore(backup["id"])
