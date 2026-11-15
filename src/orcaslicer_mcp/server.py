@@ -1499,7 +1499,7 @@ def _queue_pending(queue: dict) -> list[dict]:
 
 
 def _queue_known_ids(queue: dict) -> set[str]:
-    return {j.get("id") for j in _queue_pending(queue) + list(queue.get("history") or [])}
+    return {j["id"] for j in _queue_pending(queue) + list(queue.get("history") or []) if j.get("id")}
 
 
 def _queue_job_summary(job: dict) -> dict:
@@ -1511,12 +1511,16 @@ async def _find_new_queue_job(g: GestorClient, before: set[str]) -> tuple[dict |
     for attempt in range(QUEUE_CONFIRM_ATTEMPTS):
         if attempt:
             await asyncio.sleep(QUEUE_CONFIRM_DELAY_S)
-        new = [j for j in _queue_pending(await g.queue()) if j.get("id") not in before]
+        new = [j for j in _queue_pending(await g.queue()) if j.get("id") and j["id"] not in before]
         if len(new) == 1:
             return new[0], new
         if new:
             break
     return None, new
+
+
+class HoldUnverified(Exception):
+    pass
 
 
 async def _hold_queue_job(g: GestorClient, job: dict) -> dict:
@@ -1525,7 +1529,11 @@ async def _hold_queue_job(g: GestorClient, job: dict) -> dict:
     if job.get("status") != "queued":
         raise GestorError(f"the job is {job.get('status')!r}, only a queued job can be held")
     await g.toggle_hold(job["id"])
-    for current in _queue_pending(await g.queue()):
+    try:
+        pending = _queue_pending(await g.queue())
+    except GestorError as e:
+        raise HoldUnverified(f"the hold was sent but the queue could not be read back: {e}") from e
+    for current in pending:
         if current.get("id") == job["id"]:
             if current.get("status") != "held":
                 raise GestorError(f"the job ended up {current.get('status')!r} instead of held")
@@ -1551,6 +1559,8 @@ async def _confirm_queue_job(g: GestorClient, before: set[str], hold: bool) -> d
         try:
             out["job"] = _queue_job_summary(await _hold_queue_job(g, job))
             out["held"] = True
+        except HoldUnverified as e:
+            out |= {"held": None, "hold_detail": str(e)}
         except GestorError as e:
             out |= {"held": False, "hold_error": str(e)}
     return out
@@ -1567,7 +1577,9 @@ async def send_to_queue(
     starts it. Slice first, and only send when the user asked. Afterwards it reads the Gestor 3D
     queue and returns the new job (id, filename, status) with queue_confirmed=true.
     queue_confirmed=false means the plate WAS sent but the job could not be identified (see
-    queue_detail): check the queue instead of sending again."""
+    queue_detail): check the queue instead of sending again. With hold, held=true is verified in
+    the queue, held=false comes with hold_error, and held=null means the hold was sent but could
+    not be read back (hold_detail): check the queue before releasing or holding it again."""
     try:
         gestor_cfg = load_gestor_config()
     except GestorError as e:
