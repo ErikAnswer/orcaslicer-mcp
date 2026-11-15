@@ -23,7 +23,7 @@ from .breakdown import build_breakdown
 from .compare import compute_comparison
 from .gestor import GestorClient, GestorError, load_gestor_config
 from . import preset_sync as _psync
-from .projects import InvalidProjectName, is_listed, project_path, project_stem
+from .projects import InvalidProjectName, listed_name, project_path, project_stem
 from .guard import allow_override_warnings, sensitive_keys
 from . import notes as _notes
 from . import outcomes as _outcomes
@@ -759,6 +759,8 @@ _INVALID_PROJECT_NAME = {
     "detail": ("a plain file name: no folders, no <>:\"/\\|?*, no leading or trailing space or dot, "
                "not a reserved Windows name, at most 100 characters"),
 }
+_NO_PROJECTS_FOLDER = {"error": "projects_folder",
+                       "detail": "OrcaSlicer did not report its projects folder"}
 
 
 @mcp.tool()
@@ -813,10 +815,12 @@ async def save_project(
         return dict(_INVALID_PROJECT_NAME)
     try:
         async with _client() as c:
-            if (await c.get_project()).get("objects", 0) == 0:
+            if (await c.get_project()).get("objects") == 0:
                 return {"error": "empty", "detail": "there is nothing in the project to save"}
-            listing = await c.get_projects()
-            return await c.save_project(project_path(listing["folder"], stem), overwrite)
+            folder = (await c.get_projects()).get("folder")
+            if not folder:
+                return dict(_NO_PROJECTS_FOLDER)
+            return await c.save_project(project_path(folder, stem), overwrite)
     except ApiError as e:
         return _projects_err(e)
 
@@ -832,7 +836,8 @@ async def open_project(
     project. It REPLACES the current project: with unsaved changes it is refused
     (unsaved_changes) unless discard_unsaved=True, so ask the user or save_project first.
     Unsaved preset edits are always refused (unsaved_presets): they have to be saved or
-    discarded in OrcaSlicer. A project that brings its own scripts, G-code or printer
+    discarded in OrcaSlicer (checked just before opening: an edit made in the GUI in that same
+    moment would be dropped). A project that brings its own scripts, G-code or printer
     connection is refused (blocked_by_remote_api_policy) and stays a manual choice in
     OrcaSlicer. The reply gives the plates, the object count and the presets selected."""
     try:
@@ -842,13 +847,17 @@ async def open_project(
     try:
         async with _client() as c:
             listing = await c.get_projects()
-            if not is_listed(listing, stem):
+            folder = listing.get("folder")
+            if not folder:
+                return dict(_NO_PROJECTS_FOLDER)
+            listed = listed_name(listing, stem)
+            if listed is None:
                 return {"error": "unknown_project", "name": stem}
             modified = (await c.get_project()).get("modified") or []
             if modified:
                 return {"error": "unsaved_presets", "presets": modified,
                         "detail": "save or discard the preset edits in OrcaSlicer first"}
-            return await c.open_project(project_path(listing["folder"], stem), discard_unsaved)
+            return await c.open_project(project_path(folder, listed), discard_unsaved)
     except ApiError as e:
         return _projects_err(e)
 

@@ -28,5 +28,9 @@ def project_path(folder: str, stem: str) -> str:
     return folder.rstrip("\\/") + separator + stem + ".3mf"
 
 
-def is_listed(listing: dict, stem: str) -> bool:
-    return any(p.get("name", "").lower() == stem.lower() for p in listing.get("projects", []))
+def listed_name(listing: dict, stem: str) -> str | None:
+    for project in listing.get("projects", []):
+        name = project.get("name", "")
+        if name.lower() == stem.lower():
+            return name
+    return None
