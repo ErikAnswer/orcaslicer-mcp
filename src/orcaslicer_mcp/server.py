@@ -2046,17 +2046,18 @@ async def new_project(
     if_unsaved: Annotated[Literal["save", "discard", "fail"], Field(description=(
         "What to do when the current project has unsaved changes: 'fail' (default) refuses "
         "and changes nothing, 'save' writes it to its own path first (fails with "
-        "no_project_path if it has none), 'discard' throws the changes away."))] = "fail",
+        "no_project_path if it was never saved: save_project with a name first), 'discard' throws "
+        "the changes away."))] = "fail",
     name: Annotated[str | None, Field(description=(
         "A title for the new project, shown in the window; 'Untitled' when omitted. The file "
-        "name is chosen when save_project is called with a path."))] = None,
+        "name is chosen when save_project is called with a name."))] = None,
 ) -> dict:
     """Start a new, empty project (File > New Project) without a dialog.
 
     The unsaved-changes prompt is answered by if_unsaved. OrcaSlicer's second prompt, keep or
     discard modified presets, is answered with Keep: unsaved preset overrides carry over into
     the new project and the reply names them in kept_changes (select_preset drops them if that
-    is not wanted). Follow with load_model and save_project to create a project file. Needs fork
+    is not wanted). Follow with load_model and save_project(name) to create a project file. Needs fork
     v2.4.2-mcp.15 or later.
     """
     try:
