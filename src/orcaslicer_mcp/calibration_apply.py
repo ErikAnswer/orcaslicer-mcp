@@ -6,6 +6,7 @@ percent modifier, the linear (YOLO) test with an absolute flow ratio offset.
 """
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 PA_TESTS = frozenset({"pa_line", "pa_pattern", "pa_tower"})
@@ -69,6 +70,8 @@ def calibration_changes(test: str, value: float, stored: dict, linear: bool = Fa
         raise CalibrationValueError(
             "vfa has no preset key to write: it shows which speeds to avoid, so lower the print "
             "preset's wall speeds below the band that shows artifacts instead")
+    if not math.isfinite(value):
+        raise CalibrationValueError(f"value must be a finite number, got {value!r}")
     if test not in TESTS:
         raise CalibrationValueError(f"unknown test {test!r}; expected one of {', '.join(sorted(TESTS))}")
     if test != "flow_rate" and value < 0:

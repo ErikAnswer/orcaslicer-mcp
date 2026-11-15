@@ -45,6 +45,26 @@ def test_flow_refuses_an_implausible_result():
         calibration_changes("flow_rate", 5, STORED, linear=True)
 
 
+@pytest.mark.parametrize("stored,modifier,linear,expected", [
+    ("1", -50, False, "0.5"), ("1", 50, False, "1.5"), ("1", -0.5, True, "0.5"), ("1", 0.5, True, "1.5")])
+def test_flow_range_limits_are_accepted(stored, modifier, linear, expected):
+    plan = calibration_changes("flow_rate", modifier, {"filament_flow_ratio": stored}, linear)
+    assert plan.changes == {"filament_flow_ratio": expected}
+
+
+@pytest.mark.parametrize("modifier", [-60, 60])
+def test_flow_refuses_an_extreme_percent(modifier):
+    with pytest.raises(CalibrationValueError, match="outside"):
+        calibration_changes("flow_rate", modifier, STORED)
+
+
+@pytest.mark.parametrize("test", ["pa_line", "flow_rate", "temp_tower", "max_volumetric_speed"])
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf")])
+def test_non_finite_values_are_refused(test, value):
+    with pytest.raises(CalibrationValueError, match="finite"):
+        calibration_changes(test, value, STORED)
+
+
 def test_flow_needs_a_current_ratio():
     with pytest.raises(CalibrationValueError, match="filament_flow_ratio"):
         calibration_changes("flow_rate", 5, {})
