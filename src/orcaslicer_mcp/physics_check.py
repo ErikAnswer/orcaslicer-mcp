@@ -91,7 +91,7 @@ CHECK_LAYERS: dict[str, frozenset[str]] = {
     "temp_vs_flow":       frozenset({"print", "filament", "printer"}),  # demand from print speeds vs filament temp
     "layer_height_ratio": frozenset({"print", "printer"}),
     "line_width_ratio":   frozenset({"print", "printer"}),
-    "retraction_range":   frozenset({"printer"}),                       # retraction_length / use_firmware_retraction
+    "retraction_range":   frozenset({"filament", "printer"}),           # (filament_)retraction_length / use_firmware_retraction
     "cooling_sanity":     frozenset({"filament"}),                      # fan_min/max, slow_down_layer_time
     "first_layer_height": frozenset({"print", "printer"}),
     "initial_layer_temp": frozenset({"filament"}),
@@ -155,7 +155,10 @@ def run_checks(cfg: dict[str, str]) -> list[CheckResult]:
     # slice time - the printer firmware value governs - so the Orca number is not
     # authoritative and must not read as pass (this masked a real 0.3mm-firmware vs
     # 1mm-Orca mismatch last run).
-    ret = _f(cfg, "retraction_length")
+    # A filament override (anything but "nil") replaces the printer retraction_length.
+    ret = _f(cfg, "filament_retraction_length")
+    if ret is None:
+        ret = _f(cfg, "retraction_length")
     fw_ret = _f(cfg, "use_firmware_retraction")
     if fw_ret is not None and fw_ret >= 1:
         orca = f"{ret:g}mm" if ret is not None else "unset"

@@ -152,3 +152,13 @@ def test_every_check_declares_its_preset_layers():
     assert names, "run_checks({}) should still emit one result per check"
     assert names <= set(CHECK_LAYERS), names - set(CHECK_LAYERS)
     assert all(v <= {"print", "filament", "printer"} and v for v in CHECK_LAYERS.values())
+
+
+def test_filament_retraction_override_replaces_printer_length():
+    cfg = BASE | {"filament_retraction_length": "9"}
+    assert _by(run_checks(cfg), "retraction_range").status == "fail"
+
+
+def test_nil_filament_retraction_falls_back_to_printer_length():
+    cfg = BASE | {"filament_retraction_length": "nil"}
+    assert _by(run_checks(cfg), "retraction_range").status == "pass"

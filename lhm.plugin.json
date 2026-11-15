@@ -242,6 +242,10 @@
       "description": "Edit a named preset's settings and persist them: selects it, applies the changes atomically, saves under the same name."
     },
     {
+      "name": "apply_calibration",
+      "description": "Write the result of a calibration test into a filament preset with the right keys."
+    },
+    {
       "name": "rename_preset",
       "description": "Rename a user preset by copying it to new_name, selecting the copy, and deleting the original. Only user presets can be renamed; system presets are read-only."
     },
