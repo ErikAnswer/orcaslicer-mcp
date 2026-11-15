@@ -163,3 +163,59 @@ async def test_orca_error_keeps_detail_and_skips_confirmation():
     out = await srv.send_to_queue()
     assert out["error"].startswith("not_queue_printer")
     assert "queue_confirmed" not in out
+
+
+@respx.mock
+async def test_invalid_gestor_settings_still_send_without_hold(monkeypatch):
+    monkeypatch.setenv("ORCA_GESTOR_TIMEOUT", "abc")
+    orca = _orca_ok()
+    out = await srv.send_to_queue()
+    assert orca.called and out["sent"] is True and out["queue_confirmed"] is False
+    assert "ORCA_GESTOR_TIMEOUT" in out["queue_detail"]
+
+
+@respx.mock
+async def test_invalid_gestor_settings_refuse_to_send_with_hold(monkeypatch):
+    monkeypatch.setenv("ORCA_GESTOR_TIMEOUT", "abc")
+    orca = _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["error"] == "gestor_config" and not orca.called
+
+
+@respx.mock
+async def test_non_json_queue_after_sending_keeps_sent():
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[
+        _state([]), httpx.Response(200, text="<html>restarting</html>")])
+    _orca_ok()
+    out = await srv.send_to_queue()
+    assert out["sent"] is True and out["queue_confirmed"] is False
+    assert "not JSON" in out["queue_detail"]
+
+
+@respx.mock
+async def test_non_object_state_before_sending_is_unconfirmed():
+    respx.get(f"{GESTOR}/api/state").mock(return_value=httpx.Response(200, json=[1, 2]))
+    orca = _orca_ok()
+    out = await srv.send_to_queue()
+    assert orca.called and out["queue_confirmed"] is False
+    assert "not a JSON object" in out["queue_detail"]
+
+
+@respx.mock
+async def test_job_already_held_is_not_toggled():
+    held = NEW | {"status": "held"}
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([held])])
+    action = respx.post(f"{GESTOR}/api/queue/action")
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["held"] is True and out["job"]["status"] == "held"
+    assert not action.called
+
+
+@respx.mock
+async def test_job_leaving_the_queue_while_holding_is_reported():
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([NEW]), _state([])])
+    respx.post(f"{GESTOR}/api/queue/action").mock(return_value=httpx.Response(200, json={}))
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["held"] is False and "left the queue" in out["hold_error"]

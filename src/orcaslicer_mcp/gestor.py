@@ -58,7 +58,12 @@ class GestorClient:
         return resp
 
     async def _state(self) -> dict:
-        state = (await self._send("GET", "/api/state")).json()
+        try:
+            state = (await self._send("GET", "/api/state")).json()
+        except ValueError as e:
+            raise GestorError(f"the Gestor 3D state is not JSON: {e}") from e
+        if not isinstance(state, dict):
+            raise GestorError("the Gestor 3D state is not a JSON object")
         self._token = state.get("mutationToken")
         return state
 
@@ -66,7 +71,10 @@ class GestorClient:
         return (await self._state()).get("presets", [])
 
     async def queue(self) -> dict:
-        return (await self._state()).get("queue") or {}
+        queue = (await self._state()).get("queue") or {}
+        if not isinstance(queue, dict):
+            raise GestorError("the Gestor 3D queue is not a JSON object")
+        return queue
 
     async def download(self, path: str) -> bytes:
         resp = await self._send("GET", "/api/download", params={"root": "presets", "path": path})

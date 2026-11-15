@@ -568,26 +568,33 @@ async def send_to_queue(
     queue_confirmed=true. queue_confirmed=false means the plate WAS sent but the job could not
     be identified (see queue_detail): check the queue instead of sending again."""
     try:
-        gestor = GestorClient(load_gestor_config())
+        gestor_cfg = load_gestor_config()
     except GestorError as e:
-        return {"error": "gestor_config", "detail": str(e)}
-    async with gestor as g:
-        snapshot_error = ""
+        if hold:
+            return {"error": "gestor_config", "detail": f"{e}; nothing was sent, so it cannot be held"}
+        return await _send_unconfirmed(f"invalid Gestor 3D settings: {e}")
+    async with GestorClient(gestor_cfg) as g:
         try:
-            before: set[str] | None = _queue_known_ids(await g.queue())
+            before = _queue_known_ids(await g.queue())
         except GestorError as e:
             if hold:
                 return {"error": "gestor_unreachable", "detail": f"{e}; nothing was sent, so it cannot be held"}
-            before, snapshot_error = None, str(e)
+            return await _send_unconfirmed(f"could not read the queue before sending: {e}")
         try:
             async with _client() as c:
                 out = await c.send_to_queue()
         except ApiError as e:
             return _err(e)
-        if before is None:
-            return out | {"queue_confirmed": False,
-                          "queue_detail": f"could not read the queue before sending: {snapshot_error}"}
         return out | await _confirm_queue_job(g, before, hold)
+
+
+async def _send_unconfirmed(reason: str) -> dict:
+    try:
+        async with _client() as c:
+            out = await c.send_to_queue()
+    except ApiError as e:
+        return _err(e)
+    return out | {"queue_confirmed": False, "queue_detail": reason}
 
 
 @mcp.tool()
