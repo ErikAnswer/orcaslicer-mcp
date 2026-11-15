@@ -1,0 +1,184 @@
+"""Convert a preset read from the slicer API into OrcaSlicer's own user-preset file format
+and compare it with the copy kept by the home print queue (Gestor 3D).
+
+The API returns every option as ConfigBase::opt_serialize text. Orca's save_to_json writes
+plain strings for coString options, arrays of per-item strings for vector options and the
+serialized text for every other scalar; load_from_json reads either form back."""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+
+from . import settings_schema
+
+GESTOR_KIND = {"print": "process", "filament": "filament", "printer": "machine"}
+SETTINGS_ID_KEY = {"print": "print_settings_id", "filament": "filament_settings_id",
+                   "printer": "printer_settings_id"}
+REDACTED = "<redacted>"
+FILE_ONLY_KEYS = frozenset({"name", "from", "version", "type", "inherits", "is_custom_defined",
+                            "instantiation", "setting_id", "filament_id", "description", "url",
+                            "renamed_from"})
+_TYPE_OVERRIDES = {"print_settings_id": "coString", "printer_settings_id": "coString",
+                   "filament_settings_id": "coStrings", "filament_ids": "coStrings",
+                   "filament_multi_colour": "coStrings", "filament_colour_type": "coStrings"}
+_COMMA_VECTORS = frozenset({"coFloats", "coInts", "coBools", "coPercents", "coFloatsOrPercents",
+                            "coEnums", "coPoints"})
+_RAW_STRING_EXCEPTIONS = frozenset({"bed_custom_texture", "bed_custom_model"})
+
+
+def option_type(key: str) -> str | None:
+    if key in _TYPE_OVERRIDES:
+        return _TYPE_OVERRIDES[key]
+    record = settings_schema.describe(key)
+    return record.get("type") if record else None
+
+
+def unescape_string(text: str) -> str:
+    out, i = [], 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and i + 1 < len(text):
+            i += 1
+            c = {"n": "\n", "r": "\r", "t": "\t"}.get(text[i], text[i])
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+def unescape_strings(text: str) -> list[str]:
+    """Inverse of Orca's escape_strings_cstyle: ';'-separated items, quoted when complex."""
+    if text == "":
+        return []
+    items, i, n = [], 0, len(text)
+    while True:
+        while i < n and text[i] in " \t":
+            i += 1
+        if i == n:
+            return items
+        buf = []
+        if text[i] == '"':
+            i += 1
+            while i < n and text[i] != '"':
+                if text[i] == "\\" and i + 1 < n:
+                    i += 1
+                    buf.append({"n": "\n", "r": "\r"}.get(text[i], text[i]))
+                else:
+                    buf.append(text[i])
+                i += 1
+            i += 1
+        else:
+            while i < n and text[i] != ";":
+                buf.append(text[i])
+                i += 1
+        items.append("".join(buf))
+        while i < n and text[i] in " \t":
+            i += 1
+        if i >= n:
+            return items
+        i += 1
+        if i == n:
+            items.append("")
+            return items
+
+
+def from_api(key: str, serialized: str) -> str | list[str]:
+    """The value as Orca's save_to_json would write it."""
+    kind = option_type(key)
+    if kind == "coStrings":
+        return unescape_strings(serialized)
+    if kind in _COMMA_VECTORS:
+        return serialized.split(",") if serialized else []
+    if kind == "coPointsGroups":
+        return serialized.split("#") if serialized else []
+    if kind == "coString" and key not in _RAW_STRING_EXCEPTIONS:
+        return unescape_string(serialized)
+    return serialized
+
+
+def canonical(key: str, value) -> tuple | str | None:
+    """Comparable form of a file value; a vector written as one string is split first."""
+    if value is None:
+        return None
+    if isinstance(value, str) and option_type(key) in _COMMA_VECTORS | {"coStrings", "coPointsGroups"}:
+        value = from_api(key, value)
+    if isinstance(value, list):
+        return tuple(_number_or_text(str(v)) for v in value)
+    return _number_or_text(str(value))
+
+
+def _number_or_text(text: str):
+    try:
+        number = float(text)
+    except ValueError:
+        return text
+    return text if number != number else number
+
+
+@dataclass
+class Difference:
+    key: str
+    pc: object
+    gestor: object
+
+
+@dataclass
+class Comparison:
+    differences: list[Difference] = field(default_factory=list)
+    parent_known: bool = True
+
+
+def build_file(ptype: str, name: str, pc_config: dict, parent_config: dict | None,
+               existing: dict | None = None) -> dict:
+    """User-preset file holding only what differs from the parent, like Orca's own export.
+    A preset without a parent (or whose parent the slicer cannot read) is written in full.
+    Redacted credentials keep the value the existing file had, or are left out."""
+    existing = existing or {}
+    parent_config = parent_config or {}
+    out: dict = {"from": "User", "name": name, "inherits": pc_config.get("inherits", "") or ""}
+    if existing.get("version"):
+        out["version"] = existing["version"]
+    for key, serialized in pc_config.items():
+        if key in FILE_ONLY_KEYS:
+            continue
+        if serialized == REDACTED or (isinstance(serialized, str) and REDACTED in serialized):
+            if key in existing:
+                out[key] = existing[key]
+            continue
+        value = from_api(key, serialized)
+        if key in parent_config and canonical(key, value) == canonical(key, from_api(key, parent_config[key])):
+            continue
+        out[key] = value
+    id_key = SETTINGS_ID_KEY[ptype]
+    out[id_key] = [name] if option_type(id_key) == "coStrings" else name
+    return out
+
+
+def dump_file(preset: dict) -> bytes:
+    return (json.dumps(preset, indent="\t", sort_keys=True, ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def compare(pc_config: dict, gestor_file: dict, gestor_parent: dict | None) -> Comparison:
+    """Effective values on both sides: the PC's full config against the Gestor file laid over
+    its parent as read from the PC (both run OrcaSlicer 2.4.2, so system presets match).
+    Without that parent only the keys the Gestor file states are compared."""
+    result = Comparison(parent_known=gestor_parent is not None)
+    pc_inherits = pc_config.get("inherits", "") or ""
+    gestor_inherits = gestor_file.get("inherits", "") or ""
+    if pc_inherits != gestor_inherits:
+        result.differences.append(Difference("inherits", pc_inherits, gestor_inherits))
+    parent = gestor_parent or {}
+    keys = set(gestor_file) | (set(pc_config) if gestor_parent is not None else set())
+    for key in sorted(keys - FILE_ONLY_KEYS):
+        pc_raw = pc_config.get(key)
+        if pc_raw is not None and REDACTED in str(pc_raw):
+            continue
+        pc_value = None if pc_raw is None else from_api(key, pc_raw)
+        if key in gestor_file:
+            gestor_value = gestor_file[key]
+        elif key in parent:
+            gestor_value = from_api(key, parent[key])
+        else:
+            gestor_value = None
+        if canonical(key, pc_value) != canonical(key, gestor_value):
+            result.differences.append(Difference(key, pc_value, gestor_value))
+    return result

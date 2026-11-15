@@ -21,10 +21,13 @@ from .physics_check import run_checks, CHECK_LAYERS
 from .calibration_apply import CalibrationValueError, calibration_changes
 from .breakdown import build_breakdown
 from .compare import compute_comparison
+from .gestor import GestorClient, GestorError, load_gestor_config
+from . import preset_sync as _psync
 from .guard import allow_override_warnings
 from . import notes as _notes
 from . import outcomes as _outcomes
 import hashlib
+import json
 import time
 from . import plate_describe as _plate
 from .printer import target as _ptarget
@@ -1193,6 +1196,157 @@ async def rename_preset(
         return _m4a_err(e)
 
 
+_DIFF_LIMIT = 40
+
+
+def _diff_rows(comparison) -> dict:
+    rows = [{"key": d.key, "pc": d.pc, "gestor": d.gestor} for d in comparison.differences]
+    out: dict = {"differences": rows[:_DIFF_LIMIT], "difference_count": len(rows)}
+    if not comparison.parent_known:
+        out["note"] = "the Gestor file's parent preset is unknown to the PC; only its own keys were compared"
+    return out
+
+
+async def _parent_config(c, ptype: str, name: str) -> dict | None:
+    if not name:
+        return None
+    try:
+        return (await c.get_preset_config(ptype, name)).get("config", {})
+    except NotFound:
+        return None
+
+
+async def _sync_one_compare(c, g, ptype: str, name: str, gestor_entry: dict | None) -> dict:
+    row: dict = {"type": ptype, "name": name}
+    try:
+        pc = (await c.get_preset_config(ptype, name)).get("config", {})
+    except NotFound:
+        pc = None
+    if gestor_entry is None:
+        return row | {"status": "only_pc" if pc is not None else "missing"}
+    gestor_file = json.loads(await g.download(gestor_entry["path"]))
+    if pc is None:
+        return row | {"status": "only_gestor", "gestor_path": gestor_entry["path"]}
+    parent = await _parent_config(c, ptype, gestor_file.get("inherits", "") or "")
+    comparison = _psync.compare(pc, gestor_file, parent)
+    row |= {"status": "different" if comparison.differences else "same",
+            "gestor_path": gestor_entry["path"]}
+    return row | (_diff_rows(comparison) if comparison.differences else {})
+
+
+def _unsaved_in(status: dict, ptype: str, name: str) -> list:
+    selected = (status.get("presets") or {}).get(ptype)
+    names = selected if isinstance(selected, list) else [selected]
+    return list((status.get("modified") or {}).get(ptype) or []) if name in names else []
+
+
+async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
+                    status: dict, dry_run: bool) -> dict:
+    row: dict = {"type": ptype, "name": name}
+    try:
+        stored = await c.get_preset_config(ptype, name)
+    except NotFound:
+        return row | {"error": "unknown_preset"}
+    if stored.get("system"):
+        return row | {"error": "system_preset",
+                      "detail": "system presets ship with OrcaSlicer on both machines; sync user presets"}
+    unsaved = _unsaved_in(status, ptype, name)
+    if unsaved:
+        return row | {"error": "unsaved_changes", "modified": unsaved,
+                      "hint": "save the preset in OrcaSlicer (or discard the edits) first; only the saved version can be sent"}
+    pc = stored.get("config", {})
+    parent = await _parent_config(c, ptype, pc.get("inherits", "") or "")
+    existing_raw = await g.download(gestor_entry["path"]) if gestor_entry else None
+    existing = json.loads(existing_raw) if existing_raw else None
+    new_file = _psync.build_file(ptype, name, pc, parent, existing)
+    content = _psync.dump_file(new_file)
+    if existing is not None:
+        comparison = _psync.compare(pc, existing, await _parent_config(c, ptype, existing.get("inherits", "") or ""))
+        if not comparison.differences:
+            return row | {"action": "none", "status": "same"}
+        row |= {"action": "replace"} | _diff_rows(comparison)
+    else:
+        row |= {"action": "create"}
+    if dry_run:
+        return row | {"dry_run": True, "file_keys": len(new_file)}
+    filename = gestor_entry["path"] if gestor_entry else f"{name}.json"
+    backup = None
+    if gestor_entry is not None:
+        if await g.download(gestor_entry["path"]) != existing_raw:
+            return row | {"error": "gestor_changed", "detail": "the Gestor copy changed while comparing; run again"}
+        backup = await g.trash(gestor_entry["path"])
+    try:
+        uploaded = await g.upload(filename, content)
+    except GestorError as e:
+        if backup and backup.get("id"):
+            await g.restore(backup["id"])
+            return row | {"error": "upload_failed", "detail": str(e), "restored": True}
+        return row | {"error": "upload_failed", "detail": str(e)}
+    row |= {"written": uploaded.get("path", filename)}
+    if backup:
+        row["backup"] = {"gestor_trash_id": backup.get("id"),
+                         "hint": "the previous copy is in the Gestor 3D trash (Papelera) and can be restored there"}
+    return row
+
+
+def _match_gestor(entries: list[dict], ptype: str, name: str) -> dict | None:
+    kind = _psync.GESTOR_KIND[ptype]
+    return next((e for e in entries if e.get("kind") == kind and e.get("name") == name), None)
+
+
+@mcp.tool()
+async def sync_presets(
+    direction: Annotated[Literal["compare", "pc_to_gestor"], Field(description="'compare' only reads both sides; 'pc_to_gestor' writes the PC's saved presets into the Gestor 3D (home print queue) used by its headless slicing.")] = "compare",
+    names: Annotated[list[str] | None, Field(description="User preset names. Required for pc_to_gestor; for compare, omit to compare every user preset on the PC and every preset on the Gestor.")] = None,
+    type: Annotated[Literal["print", "filament", "printer"] | None, Field(description="Restrict to one preset group; needed only when a name exists in more than one group.")] = None,
+    dry_run: Annotated[bool, Field(description="pc_to_gestor only: True (default) shows what would be written; pass False to write.")] = True,
+) -> dict:
+    """Compare the user presets of the OrcaSlicer on the PC with the copies the Gestor 3D keeps
+    for its own slicing (autoslice and Laminador), and copy PC presets there. Values are compared
+    as effective settings (parent preset plus overrides), key by key; status is same, different,
+    only_pc or only_gestor. pc_to_gestor sends the SAVED preset, written like OrcaSlicer's own
+    export (only what differs from its parent, with inherits). It refuses a preset with unsaved
+    edits in the PC, never sends system presets and never writes redacted credentials. Before
+    replacing a Gestor copy it moves the old one to the Gestor's trash, from where it can be
+    restored (and restores it if the upload fails). Nothing changes in the PC's OrcaSlicer.
+    Run with dry_run=True first and show the user the differences."""
+    if direction == "pc_to_gestor" and not names:
+        return {"error": "names_required", "detail": "name the presets to send; pc_to_gestor never sends everything"}
+    types = [type] if type else list(_PRESET_TYPES)
+    try:
+        async with _client() as c, GestorClient(load_gestor_config()) as g:
+            gestor_entries = await g.presets()
+            pc_lists = await c.get_presets()
+            pc_names = {t: {p["name"] for p in pc_lists.get(t, []) or [] if not p.get("system")} for t in types}
+            pc_all = {t: {p["name"] for p in pc_lists.get(t, []) or []} for t in types}
+            if names:
+                targets = []
+                for name in names:
+                    found = [t for t in types if name in pc_all[t] or _match_gestor(gestor_entries, t, name)]
+                    if len(found) > 1:
+                        return {"error": "ambiguous_name", "name": name, "types": found,
+                                "hint": "pass type to choose the preset group"}
+                    targets.append((found[0] if found else types[0], name))
+            else:
+                targets = sorted({(t, n) for t in types for n in pc_names[t]}
+                                 | {(t, e["name"]) for t in types for e in gestor_entries
+                                    if e.get("kind") == _psync.GESTOR_KIND[t]})
+            results = []
+            if direction == "compare":
+                for t, n in targets:
+                    results.append(await _sync_one_compare(c, g, t, n, _match_gestor(gestor_entries, t, n)))
+            else:
+                status = await c.get_status()
+                for t, n in targets:
+                    results.append(await _push_one(c, g, t, n, _match_gestor(gestor_entries, t, n),
+                                                   status, dry_run))
+            return {"direction": direction, "presets": results}
+    except GestorError as e:
+        return {"error": "gestor_error", "status": e.status, "detail": str(e)}
+    except ApiError as e:
+        return _err(e)
+
+
 @mcp.tool()
 async def get_gcode() -> dict:
     """Retrieve the last successful slice's G-code as text."""
@@ -1626,6 +1780,7 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
     "save_preset": ("Save preset (overwrites stored settings)", False, True),
     "edit_preset": ("Edit preset (overwrites stored settings)", False, True),
     "apply_calibration": ("Apply calibration result to filament preset", False, True),
+    "sync_presets": ("Compare or copy presets to the Gestor 3D", False, True),
     "delete_object": ("Delete object from plate", False, True),
     "delete_plate": ("Delete plate (its objects are parked off-plate)", False, True),
     "delete_preset": ("Delete preset", False, True),
@@ -1638,7 +1793,8 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
 
 # Tools that reach outside OrcaSlicer (the printer on the network), and tools that are safe to repeat
 # although they write local state.
-_OPEN_WORLD_TOOLS = frozenset({"get_printer_status", "wait_for_printer", "list_print_history", "check_printer_match"})
+_OPEN_WORLD_TOOLS = frozenset({"get_printer_status", "wait_for_printer", "list_print_history", "check_printer_match",
+                               "sync_presets"})
 _IDEMPOTENT_TOOLS = frozenset({"list_print_history"})
 
 

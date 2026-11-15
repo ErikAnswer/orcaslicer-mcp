@@ -8,6 +8,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Added
+- `sync_presets` compares the PC user presets with the copies the Gestor 3D (home print queue, `ORCA_GESTOR_URL`, default `http://192.168.1.17`) keeps for its headless slicing, key by key on effective values, and with `direction="pc_to_gestor"` copies named presets there in OrcaSlicer's own export format. It refuses presets with unsaved edits and system presets, never writes redacted credentials, moves the old Gestor copy to its trash before replacing it (restoring it if the upload fails) and defaults to a dry run.
 - `apply_calibration` writes the value picked from a calibration test into a filament preset with the right keys: PA tests set `pressure_advance` and turn `enable_pressure_advance` on; `flow_rate` scales `filament_flow_ratio` by (100 + modifier) / 100, or adds the offset of the linear (YOLO) test, from the stored value; `temp_tower`, `max_volumetric_speed` and `retraction` set `nozzle_temperature`, `filament_max_volumetric_speed` and `filament_retraction_length`. It saves through `edit_preset`, so the physics gate applies, and `dry_run` shows the change without saving.
 
 ### Fixed
