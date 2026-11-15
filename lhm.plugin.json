@@ -267,7 +267,7 @@
     },
     {
       "name": "sync_presets",
-      "description": "Compare the user presets of the OrcaSlicer on the PC with the copies the Gestor 3D keeps for its own slicing (autoslice and Laminador), and copy PC presets there."
+      "description": "Compare the user presets of the OrcaSlicer on the PC with the copies the Gestor 3D keeps for its own slicing (autoslice and Laminador), and copy presets either way."
     },
     {
       "name": "get_gcode",

@@ -1,0 +1,272 @@
+import json
+
+import httpx
+import pytest
+import respx
+
+import orcaslicer_mcp.server as srv
+from orcaslicer_mcp import preset_sync as ps
+from orcaslicer_mcp.client import OrcaClient
+from orcaslicer_mcp.config import Config
+
+BASE = "http://x:13130/api/v1"
+GESTOR = "http://g"
+NAME = "SM PLA - White"
+BASE_NAME = "Generic PLA @System"
+
+PARENT = {"inherits": "", "filament_settings_id": "\"Generic PLA @System\"", "nozzle_temperature": "220",
+          "filament_flow_ratio": "0.98", "filament_vendor": "Generic", "compatible_printers": "",
+          "filament_start_gcode": "\"; filament start gcode\\n\"", "pressure_advance": "0.02"}
+PC = PARENT | {"inherits": BASE_NAME, "filament_settings_id": "\"SM PLA - White\"",
+               "nozzle_temperature": "210", "filament_vendor": "\"Smart Materials\"",
+               "pressure_advance": "0.036", "filament_flow_ratio": "0.95"}
+GESTOR_FILE = {"from": "User", "inherits": BASE_NAME, "name": NAME,
+               "filament_settings_id": [NAME], "filament_vendor": ["Smart Materials"],
+               "nozzle_temperature": ["210"], "pressure_advance": ["0.025"], "version": "2.4.0.4"}
+
+
+class FakeOrca:
+    """Just enough of the slicer: presets, the edited config of the selected one, saving."""
+
+    def __init__(self, presets: dict, modified: dict | None = None, selected: str = "Other"):
+        self.presets = {k: dict(v) for k, v in presets.items()}
+        self.modified = modified or {}
+        self.selected = {"print": "p", "printer": "q", "filament": [selected, "Other 2"]}
+        self.edited: dict = {}
+        self.writes: list = []
+
+    def install(self):
+        respx.get(f"{BASE}/presets").mock(side_effect=lambda r: httpx.Response(200, json={
+            "filament": [{"name": n, "system": n.endswith("@System")} for n in self.presets],
+            "print": [], "printer": []}))
+        respx.post(f"{BASE}/preset/config").mock(side_effect=self._config)
+        respx.get(f"{BASE}/status").mock(side_effect=lambda r: httpx.Response(200, json={
+            "presets": {"print": self.selected["print"], "printer": self.selected["printer"],
+                        "filaments": list(self.selected["filament"])},
+            "modified": {"print": [], "printer": [], "filament": []} | self.modified}))
+        respx.put(f"{BASE}/preset").mock(side_effect=self._select)
+        respx.put(f"{BASE}/config").mock(side_effect=self._put)
+        respx.post(f"{BASE}/preset/save").mock(side_effect=self._save)
+
+    def _config(self, request):
+        name = json.loads(request.read())["name"]
+        if name not in self.presets:
+            return httpx.Response(404, json={"error": "unknown_preset"})
+        return httpx.Response(200, json={"name": name, "system": name.endswith("@System"),
+                                         "config": self.presets[name]})
+
+    def _select(self, request):
+        body = json.loads(request.read())
+        self.writes.append(("select", body))
+        slot = body.get("slot", 0)
+        self.selected["filament"][slot] = body["name"]
+        if "slot" not in body:
+            self.edited = dict(self.presets[body["name"]])
+            self.edited_from = body["name"]
+        return httpx.Response(200, json={"selected": body["name"]})
+
+    def _put(self, request):
+        changes = json.loads(request.read())
+        self.writes.append(("put", changes))
+        self.edited |= changes
+        return httpx.Response(200, json={"applied": sorted(changes)})
+
+    def _save(self, request):
+        body = json.loads(request.read())
+        self.writes.append(("save", body))
+        inherits = self.edited_from if self.edited_from.endswith("@System") else self.edited.get("inherits", "")
+        self.presets[body["name"]] = self.edited | {"inherits": inherits,
+                                                    "filament_settings_id": f"\"{body['name']}\""}
+        self.selected["filament"][0] = body["name"]
+        return httpx.Response(200, json={"saved": body["name"]})
+
+
+@pytest.fixture
+def both(monkeypatch, tmp_path):
+    monkeypatch.setattr(srv, "_client", lambda: OrcaClient(Config(base_url="http://x:13130", token="t", timeout=5)))
+    monkeypatch.setenv("ORCA_GESTOR_URL", GESTOR)
+    monkeypatch.setenv("ORCA_PRESET_BACKUP_DIR", str(tmp_path / "backups"))
+    return tmp_path / "backups"
+
+
+def _gestor(file=GESTOR_FILE, entries=None):
+    entries = [{"path": f"{NAME}.json", "name": NAME, "kind": "filament"}] if entries is None else entries
+    respx.get(f"{GESTOR}/api/state").mock(return_value=httpx.Response(200, json={"presets": entries}))
+    respx.get(f"{GESTOR}/api/download").mock(return_value=httpx.Response(200, content=json.dumps(file).encode()))
+
+
+def test_api_text_round_trips_file_values():
+    assert ps.to_api("filament_vendor", ["Smart Materials"]) == '"Smart Materials"'
+    assert ps.to_api("filament_settings_id", ["a;b", "c"]) == '"a;b";c'
+    assert ps.to_api("nozzle_temperature", ["210", "215"]) == "210,215"
+    assert ps.to_api("machine_start_gcode", 'G28\nM117 "hi" \\') == 'G28\\nM117 \\"hi\\" \\\\'
+    assert ps.to_api("layer_height", "0.2") == "0.2"
+    assert ps.to_api("bed_custom_texture", "C:\\t.png") == "C:\\t.png"
+    for key, text in [("filament_vendor", '"a b";;c'), ("machine_start_gcode", 'G1\\n\\"x\\"'),
+                      ("bed_exclude_area", "0x0,10x0"), ("nozzle_temperature", "200")]:
+        assert ps.to_api(key, ps.from_api(key, text)) == text
+
+
+def test_target_changes_lay_the_file_over_the_parent():
+    changes = ps.target_changes(GESTOR_FILE, PC, PARENT)
+    assert changes == {"filament_flow_ratio": "0.98", "pressure_advance": "0.025"}
+    assert ps.target_changes(GESTOR_FILE, PARENT, PARENT) == {
+        "filament_vendor": '"Smart Materials"', "nozzle_temperature": "210", "pressure_advance": "0.025"}
+
+
+def test_target_changes_leave_redacted_credentials_alone():
+    start = {"printhost_apikey": "<redacted>", "layer_height": "0.2"}
+    assert ps.target_changes({"printhost_apikey": "x", "layer_height": "0.3"}, start, {}) == {"layer_height": "0.3"}
+
+
+@respx.mock
+async def test_dry_run_shows_differences_and_writes_nothing(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.install()
+    _gestor()
+    out = await srv.sync_presets("gestor_to_pc", [NAME])
+    row = out["presets"][0]
+    assert row["action"] == "replace" and row["dry_run"] is True and row["start_from"] == NAME
+    assert {d["key"] for d in row["differences"]} == {"filament_flow_ratio", "pressure_advance"}
+    assert row["keys_to_write"] == 2
+    assert pc.writes == [] and not both.exists()
+
+
+@respx.mock
+async def test_pull_writes_backs_up_and_ends_the_same(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.install()
+    _gestor()
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["written"] is True and row["verified"] is True
+    assert pc.writes[0] == ("select", {"type": "filament", "name": NAME})
+    assert pc.writes[1] == ("put", {"filament_flow_ratio": "0.98", "pressure_advance": "0.025"})
+    assert pc.writes[2][0] == "save" and pc.writes[2][1]["name"] == NAME
+    backup = json.loads(open(row["backup"]).read())
+    assert backup["config"]["pressure_advance"] == "0.036"
+    assert row["reselected"] == [{"type": "filament", "name": "Other", "slot": 0}]
+    again = (await srv.sync_presets("compare", [NAME]))["presets"][0]
+    assert again["status"] == "same"
+
+
+@respx.mock
+async def test_a_new_preset_starts_from_its_parent_without_backup(both):
+    pc = FakeOrca({BASE_NAME: PARENT})
+    pc.install()
+    _gestor()
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], type="filament", dry_run=False))["presets"][0]
+    assert row["action"] == "create" and row["start_from"] == BASE_NAME
+    assert "backup" not in row and row["verified"] is True
+    assert pc.presets[NAME]["inherits"] == BASE_NAME
+
+
+@respx.mock
+async def test_unsaved_edits_anywhere_refuse_before_touching_anything(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, modified={"print": ["layer_height"]})
+    pc.install()
+    _gestor()
+    out = await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False)
+    assert out["error"] == "unsaved_changes" and out["modified"] == {"print": ["layer_height"]}
+    assert pc.writes == [] and not both.exists()
+
+
+@respx.mock
+async def test_edits_made_after_the_first_check_still_stop_the_write(both, monkeypatch):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.install()
+    _gestor()
+    original = srv._pull_one
+
+    async def edit_meanwhile(*args):
+        pc.modified = {"filament": ["nozzle_temperature"]}
+        return await original(*args)
+    monkeypatch.setattr(srv, "_pull_one", edit_meanwhile)
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "unsaved_changes" and pc.writes == []
+
+
+@respx.mock
+async def test_protected_keys_are_reported_not_written(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.install()
+    _gestor(GESTOR_FILE | {"filament_start_gcode": ["M104 S0"], "post_process": ["evil.sh"]})
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    skipped = {s["key"]: s for s in row["skipped_keys"]}
+    assert set(skipped) == {"filament_start_gcode", "post_process"}
+    assert skipped["filament_start_gcode"]["pc_keeps"] == ["; filament start gcode\n"]
+    put = next(w[1] for w in pc.writes if w[0] == "put")
+    assert "filament_start_gcode" not in put and "post_process" not in put
+    assert row["verified"] is True
+
+
+@respx.mock
+async def test_already_the_same_writes_nothing(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.install()
+    _gestor(GESTOR_FILE | {"pressure_advance": ["0.036"], "filament_flow_ratio": ["0.95"]})
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row == {"type": "filament", "name": NAME, "action": "none", "status": "same"}
+    assert pc.writes == []
+
+
+@respx.mock
+async def test_a_different_parent_starts_from_the_files_parent(both):
+    other = PARENT | {"filament_settings_id": "\"Other PLA @System\""}
+    pc = FakeOrca({NAME: PC | {"inherits": "Other PLA @System"}, BASE_NAME: PARENT, "Other PLA @System": other})
+    pc.install()
+    _gestor()
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["start_from"] == BASE_NAME and row["verified"] is True
+    assert pc.presets[NAME]["inherits"] == BASE_NAME
+
+
+@respx.mock
+async def test_refusals_unknown_base_standalone_system_and_missing(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.install()
+    _gestor(GESTOR_FILE | {"inherits": "Missing @System"})
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "unknown_base"
+    _gestor(GESTOR_FILE | {"inherits": "", "name": "Loose"},
+            entries=[{"path": "Loose.json", "name": "Loose", "kind": "filament"}])
+    row = (await srv.sync_presets("gestor_to_pc", ["Loose"], type="filament", dry_run=False))["presets"][0]
+    assert row["error"] == "no_base"
+    _gestor(entries=[{"path": "x.json", "name": BASE_NAME, "kind": "filament"}])
+    row = (await srv.sync_presets("gestor_to_pc", [BASE_NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "system_preset"
+    _gestor(entries=[])
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "not_in_gestor"
+    assert (await srv.sync_presets("gestor_to_pc"))["error"] == "names_required"
+    assert pc.writes == []
+
+
+@respx.mock
+async def test_a_failed_save_still_restores_the_selection(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.install()
+    respx.post(f"{BASE}/preset/save").mock(return_value=httpx.Response(
+        409, json={"error": "temperature_pairs_unsafe"}))
+    _gestor()
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "write_failed" and "backup" in row
+    assert row["reselected"] == [{"type": "filament", "name": "Other", "slot": 0}]
+    assert pc.presets[NAME] == PC
+
+
+@respx.mock
+async def test_no_backup_no_write(both, monkeypatch):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.install()
+    _gestor()
+
+    def fail(*args):
+        raise OSError("read-only")
+    monkeypatch.setattr(srv, "_write_pc_backup", fail)
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "backup_failed" and pc.writes == []
+
+
+def test_backup_file_name_is_safe(both):
+    path = srv._write_pc_backup("filament", "../a/b:c", {"config": {}})
+    assert path.startswith(str(both)) and "/" not in path[len(str(both)) + 1:]
