@@ -68,21 +68,6 @@ async def test_get_project_needs_fork_15(monkeypatch):
     assert "fork v2.4.2-mcp.15" in out["error"]
 
 
-# --- save_project ----------------------------------------------------------------------
-
-@respx.mock
-@respx.mock
-@respx.mock
-@respx.mock
-@respx.mock
-# --- open_project ---------------------------------------------------------------------
-
-@respx.mock
-@respx.mock
-@respx.mock
-@respx.mock
-@respx.mock
-@respx.mock
 # --- new_project -----------------------------------------------------------------------
 
 @respx.mock
@@ -105,28 +90,6 @@ async def test_new_project_with_name(monkeypatch):
     assert out["project"]["name"] == "bracket v2"
     assert _body(route) == {"if_unsaved": "discard", "name": "bracket v2"}
 
-
-# --- recent list -----------------------------------------------------------------------
-
-@respx.mock
-@respx.mock
-@respx.mock
-@respx.mock
-# --- browse ----------------------------------------------------------------------------
-
-@respx.mock
-@respx.mock
-@respx.mock
-# --- move / delete ---------------------------------------------------------------------
-
-@respx.mock
-@respx.mock
-@respx.mock
-@respx.mock
-
-@respx.mock
-@respx.mock
-@respx.mock
 
 def test_project_tool_annotations():
     tools = srv.mcp._tool_manager._tools

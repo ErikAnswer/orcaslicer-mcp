@@ -130,8 +130,8 @@ points them at another checkout).
 1. Raise the version in the file header and in `PLUGIN_VERSION`, and `LATEST_PLUGIN_VERSION` in
    `src/orcaslicer_mcp/plugin_update.py` with them (a test checks all three).
 2. Publish a GitHub release tagged `plugin-vX.Y.Z` with `--latest=false`, so the latest release stays
-   the orcaslicer-mcp one. `.github/workflows/publish-orcacloud.yml` then uploads that version to the
-   OrcaCloud listing; the release notes become its changelog.
+   the orcaslicer-mcp one. (Upstream then uploads it to OrcaCloud; the ErikAnswer fork does not
+   publish there.)
 3. Attach `orcaslicer_mcp_plugin.py` and its `.sha256` to the next orcaslicer-mcp release too, for
    people who install from a file.
 
