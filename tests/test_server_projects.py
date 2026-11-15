@@ -95,3 +95,19 @@ def test_project_tools_are_annotated():
     assert tools["list_projects"].annotations.read_only_hint is True
     for name in ("clear_plate", "save_project", "open_project"):
         assert tools[name].annotations.destructive_hint is True, name
+
+
+@respx.mock
+async def test_unknown_project_is_not_mistaken_for_an_old_build():
+    respx.post(f"{BASE}/project/open").mock(return_value=httpx.Response(
+        404, json={"error": "unknown_project", "name": "nada"}))
+    out = await srv.open_project("nada")
+    assert "unknown_project" in out["error"] and "mcp.15" not in out["error"]
+
+
+@respx.mock
+async def test_invalid_name_is_reported():
+    respx.post(f"{BASE}/project/save").mock(return_value=httpx.Response(
+        422, json={"error": "invalid_name"}))
+    out = await srv.save_project("CON")
+    assert "invalid_name" in out["error"]
