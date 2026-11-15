@@ -270,3 +270,17 @@ async def test_no_backup_no_write(both, monkeypatch):
 def test_backup_file_name_is_safe(both):
     path = srv._write_pc_backup("filament", "../a/b:c", {"config": {}})
     assert path.startswith(str(both)) and "/" not in path[len(str(both)) + 1:]
+
+
+@respx.mock
+async def test_a_failed_save_on_the_selected_preset_discards_the_half_applied_edits(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected=NAME)
+    pc.install()
+    respx.post(f"{BASE}/preset/save").mock(return_value=httpx.Response(
+        409, json={"error": "temperature_pairs_unsafe"}))
+    _gestor()
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "write_failed" and row["edits_discarded"] is True
+    assert row["reselected"] == []
+    assert pc.writes[-1] == ("put", {"filament_flow_ratio": "0.95", "pressure_advance": "0.036"})
+    assert pc.edited == PC

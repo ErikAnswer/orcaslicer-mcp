@@ -1507,17 +1507,32 @@ async def _restore_selection(c, before: dict) -> list:
     return restored
 
 
-async def _apply_and_save(c, ptype: str, name: str, start_name: str, changes: dict) -> dict | None:
+async def _apply_and_save(c, ptype: str, name: str, start_name: str, start: dict,
+                          changes: dict) -> dict | None:
+    """On failure the selected preset is put back to its stored values, so no half-applied
+    edits stay behind even when it is the preset that was already selected."""
+    put = False
     try:
         await c.select_preset(ptype, start_name)
         if changes:
-            applied = await c.put_config(changes)
-            if applied.get("errors"):
-                return {"error": "invalid_keys", "errors": applied["errors"]}
+            put = True
+            errors = (await c.put_config(changes)).get("errors")
+            if errors:
+                raise Validation("the slicer refused some keys", errors)
         await c.save_preset(ptype, name)
+        return None
+    except Validation as e:
+        failure = {"error": "invalid_keys", "errors": e.errors}
     except ApiError as e:
-        return {"error": "write_failed", "detail": str(e)}
-    return None
+        failure = {"error": "write_failed", "detail": str(e)}
+    if put:
+        try:
+            await c.restore_config({k: start[k] for k in changes if k in start})
+            failure["edits_discarded"] = True
+        except ApiError as e:
+            failure |= {"edits_discarded": False, "discard_error": str(e),
+                        "hint": "discard the unsaved edits of this preset in OrcaSlicer"}
+    return failure
 
 
 async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_run: bool) -> dict:
@@ -1576,7 +1591,7 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
             row["backup"] = _write_pc_backup(ptype, name, stored)
         except OSError as e:
             return row | {"error": "backup_failed", "detail": str(e)}
-    failure = await _apply_and_save(c, ptype, name, start_name, changes)
+    failure = await _apply_and_save(c, ptype, name, start_name, start, changes)
     try:
         row["reselected"] = await _restore_selection(c, status.get("presets") or {})
     except ApiError as e:
