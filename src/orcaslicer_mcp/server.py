@@ -488,18 +488,113 @@ async def create_calibration(
         return _err(e)
 
 
+QUEUE_CONFIRM_ATTEMPTS = 5
+QUEUE_CONFIRM_DELAY_S = 1.0
+
+
+def _queue_pending(queue: dict) -> list[dict]:
+    current = [queue["current"]] if queue.get("current") else []
+    return list(queue.get("jobs") or []) + current
+
+
+def _queue_known_ids(queue: dict) -> set[str]:
+    return {j.get("id") for j in _queue_pending(queue) + list(queue.get("history") or [])}
+
+
+def _queue_job_summary(job: dict) -> dict:
+    return {k: job.get(k) for k in ("id", "filename", "status", "position", "createdAt")}
+
+
+async def _find_new_queue_job(g: GestorClient, before: set[str]) -> tuple[dict | None, list[dict]]:
+    new: list[dict] = []
+    for attempt in range(QUEUE_CONFIRM_ATTEMPTS):
+        if attempt:
+            await asyncio.sleep(QUEUE_CONFIRM_DELAY_S)
+        new = [j for j in _queue_pending(await g.queue()) if j.get("id") not in before]
+        if len(new) == 1:
+            return new[0], new
+        if new:
+            break
+    return None, new
+
+
+async def _hold_queue_job(g: GestorClient, job: dict) -> dict:
+    if job.get("status") == "held":
+        return job
+    if job.get("status") != "queued":
+        raise GestorError(f"the job is {job.get('status')!r}, only a queued job can be held")
+    await g.toggle_hold(job["id"])
+    for current in _queue_pending(await g.queue()):
+        if current.get("id") == job["id"]:
+            if current.get("status") != "held":
+                raise GestorError(f"the job ended up {current.get('status')!r} instead of held")
+            return current
+    raise GestorError("the job left the queue before it could be held")
+
+
+async def _confirm_queue_job(g: GestorClient, before: set[str], hold: bool) -> dict:
+    try:
+        job, new = await _find_new_queue_job(g, before)
+    except GestorError as e:
+        out = {"queue_confirmed": False, "queue_detail": f"could not read the queue: {e}"}
+        return out | ({"held": False} if hold else {})
+    if job is None:
+        detail = ("several new jobs appeared at once; not guessing which one is this plate"
+                  if new else "the job did not show up in the queue")
+        out = {"queue_confirmed": False, "queue_detail": detail}
+        if new:
+            out["candidates"] = [_queue_job_summary(j) for j in new]
+        return out | ({"held": False} if hold else {})
+    out = {"queue_confirmed": True, "job": _queue_job_summary(job)}
+    if hold:
+        try:
+            out["job"] = _queue_job_summary(await _hold_queue_job(g, job))
+            out["held"] = True
+        except GestorError as e:
+            out |= {"held": False, "hold_error": str(e)}
+    return out
+
+
 @mcp.tool()
-async def send_to_queue() -> dict:
+async def send_to_queue(
+    hold: Annotated[bool, Field(description="Put the new job on hold ('held') in the queue instead of leaving it 'queued', so it waits until the user releases it in the Gestor 3D.")] = False,
+) -> dict:
     """Send the sliced current plate to the home print queue through the selected printer
     preset's own Flashforge send (the send dialog's defaults and automatic material-slot
     mapping, without the dialog). Refused (not_queue_printer) unless that printer points at
     the queue; it never reaches a printer directly. The queue holds the job until the user
-    confirms the bed is clear and starts it. Slice first, and only send when the user asked."""
+    confirms the bed is clear and starts it. Slice first, and only send when the user asked.
+    Afterwards it reads the Gestor 3D queue and returns the new job (id, filename, status) with
+    queue_confirmed=true. queue_confirmed=false means the plate WAS sent but the job could not
+    be identified (see queue_detail): check the queue instead of sending again."""
+    try:
+        gestor_cfg = load_gestor_config()
+    except GestorError as e:
+        if hold:
+            return {"error": "gestor_config", "detail": f"{e}; nothing was sent, so it cannot be held"}
+        return await _send_unconfirmed(f"invalid Gestor 3D settings: {e}")
+    async with GestorClient(gestor_cfg) as g:
+        try:
+            before = _queue_known_ids(await g.queue())
+        except GestorError as e:
+            if hold:
+                return {"error": "gestor_unreachable", "detail": f"{e}; nothing was sent, so it cannot be held"}
+            return await _send_unconfirmed(f"could not read the queue before sending: {e}")
+        try:
+            async with _client() as c:
+                out = await c.send_to_queue()
+        except ApiError as e:
+            return _err(e)
+        return out | await _confirm_queue_job(g, before, hold)
+
+
+async def _send_unconfirmed(reason: str) -> dict:
     try:
         async with _client() as c:
-            return await c.send_to_queue()
+            out = await c.send_to_queue()
     except ApiError as e:
         return _err(e)
+    return out | {"queue_confirmed": False, "queue_detail": reason}
 
 
 @mcp.tool()

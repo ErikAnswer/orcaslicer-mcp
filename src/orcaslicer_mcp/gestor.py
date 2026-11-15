@@ -57,10 +57,24 @@ class GestorClient:
             raise GestorError(message, resp.status_code)
         return resp
 
-    async def presets(self) -> list[dict]:
-        state = (await self._send("GET", "/api/state")).json()
+    async def _state(self) -> dict:
+        try:
+            state = (await self._send("GET", "/api/state")).json()
+        except ValueError as e:
+            raise GestorError(f"the Gestor 3D state is not JSON: {e}") from e
+        if not isinstance(state, dict):
+            raise GestorError("the Gestor 3D state is not a JSON object")
         self._token = state.get("mutationToken")
-        return state.get("presets", [])
+        return state
+
+    async def presets(self) -> list[dict]:
+        return (await self._state()).get("presets", [])
+
+    async def queue(self) -> dict:
+        queue = (await self._state()).get("queue") or {}
+        if not isinstance(queue, dict):
+            raise GestorError("the Gestor 3D queue is not a JSON object")
+        return queue
 
     async def download(self, path: str) -> bytes:
         resp = await self._send("GET", "/api/download", params={"root": "presets", "path": path})
@@ -98,3 +112,6 @@ class GestorClient:
         resp = await self._mutate("/api/preset-upload", {"Content-Type": "application/json"},
                                   params={"filename": filename}, content=content)
         return resp.json().get("preset", {})
+
+    async def toggle_hold(self, job_id: str) -> None:
+        await self._mutate("/api/queue/action", json={"action": "toggleHold", "id": job_id})
