@@ -182,7 +182,9 @@ def token_problem(e: ApiError) -> bool:
     """True when OrcaSlicer refused the token or this server has none (the fix is the token). A
     ConfigError is a missing token only when it names ORCA_API_TOKEN (load_config says so); any other
     one, an invalid ORCA_API_TIMEOUT for instance, is not the token's fault."""
-    return isinstance(e, Unauthorized) or (isinstance(e, ConfigError) and "ORCA_API_TOKEN" in str(e))
+    # Not a token problem when OrcaSlicer simply wasn't found (config.NOT_FOUND): the fix is starting it.
+    return isinstance(e, Unauthorized) or (isinstance(e, ConfigError) and "ORCA_API_TOKEN" in str(e)
+                                           and "wasn't found" not in str(e))
 
 
 def orca_read_hint(e: ApiError, start_hint: str) -> str:
@@ -190,6 +192,8 @@ def orca_read_hint(e: ApiError, start_hint: str) -> str:
     other configuration error, else `start_hint` (OrcaSlicer is simply not running)."""
     if token_problem(e):
         return TOKEN_HINT
+    if isinstance(e, ConfigError) and "wasn't found" in str(e):
+        return start_hint  # no token and OrcaSlicer not found on this computer: start it
     return SETTINGS_HINT if isinstance(e, ConfigError) else start_hint
 
 
@@ -303,7 +307,10 @@ async def _resolve_target(fork_factory, where: dict) -> PrinterTarget:
     host_type = str(cfg.get("host_type") or "").strip().lower() or None
     if not host:
         if (model or "").startswith("Bambu Lab"):
-            raise PrinterError("unsupported_connection", "Bambu printers aren't supported yet (it's planned).",
+            raise PrinterError("unsupported_connection",
+                               "Bambu Lab printers: status, waiting and print history aren't read yet. "
+                               "get_printer_slots, get_filament_slot_mapping and check_printer_match read the "
+                               "AMS through OrcaSlicer (the OrcaSlicer MCP build with bambu_ams).",
                                host_type="bambu")
         raise PrinterError("not_configured", f"The printer profile '{name}' has no connection set up.",
                            hint=_PROFILE_ADDRESS_HINT)
