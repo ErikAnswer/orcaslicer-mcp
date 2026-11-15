@@ -57,13 +57,19 @@ class GestorClient:
             raise GestorError(message, resp.status_code)
         return resp
 
-    async def _state(self) -> dict:
+    @staticmethod
+    def _json(resp: httpx.Response) -> dict:
+        path = resp.request.url.path
         try:
-            state = (await self._send("GET", "/api/state")).json()
+            body = resp.json()
         except ValueError as e:
-            raise GestorError(f"the Gestor 3D state is not JSON: {e}") from e
-        if not isinstance(state, dict):
-            raise GestorError("the Gestor 3D state is not a JSON object")
+            raise GestorError(f"the Gestor 3D answer to {path} is not JSON: {e}", resp.status_code) from e
+        if not isinstance(body, dict):
+            raise GestorError(f"the Gestor 3D answer to {path} is not a JSON object", resp.status_code)
+        return body
+
+    async def _state(self) -> dict:
+        state = self._json(await self._send("GET", "/api/state"))
         self._token = state.get("mutationToken")
         return state
 
@@ -102,16 +108,16 @@ class GestorClient:
 
     async def trash(self, path: str) -> dict:
         resp = await self._mutate("/api/trash", json={"root": "presets", "path": path})
-        return resp.json().get("entry") or {}
+        return self._json(resp).get("entry") or {}
 
     async def restore(self, entry_id: str) -> dict:
         resp = await self._mutate("/api/restore", json={"id": entry_id})
-        return resp.json().get("restored", {})
+        return self._json(resp).get("restored", {})
 
     async def upload(self, filename: str, content: bytes) -> dict:
         resp = await self._mutate("/api/preset-upload", {"Content-Type": "application/json"},
                                   params={"filename": filename}, content=content)
-        return resp.json().get("preset", {})
+        return self._json(resp).get("preset", {})
 
     async def toggle_hold(self, job_id: str) -> None:
         await self._mutate("/api/queue/action", json={"action": "toggleHold", "id": job_id})

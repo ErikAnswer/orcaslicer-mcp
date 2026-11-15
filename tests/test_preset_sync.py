@@ -303,3 +303,87 @@ async def test_a_standalone_preset_compares_every_pc_key(both):
     row = (await srv.sync_presets())["presets"][0]
     assert row["status"] == "different" and "note" not in row
     assert row["differences"] == [{"key": "filament_type", "pc": ["PLA"], "gestor": None}]
+
+
+@respx.mock
+async def test_compare_reports_a_preset_only_on_the_pc(both):
+    _mock_pc()
+    _mock_gestor(entries=[])
+    rows = (await srv.sync_presets())["presets"]
+    assert rows == [{"type": "filament", "name": "SM PLA - White", "status": "only_pc"}]
+
+
+@respx.mock
+async def test_a_conflict_when_creating_is_an_upload_failure_without_restore(both):
+    _mock_pc()
+    trash, upload, restore = _mock_gestor(entries=[])
+    upload.mock(return_value=httpx.Response(409, json={"error": "Ya existe un preset con ese nombre."}))
+    row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
+    assert row["error"] == "upload_failed" and "Ya existe" in row["detail"] and "restored" not in row
+    assert trash.call_count == 0 and restore.call_count == 0
+
+
+@respx.mock
+async def test_a_stale_token_on_trash_is_refreshed_once(both):
+    _mock_pc()
+    trash, upload, _ = _mock_gestor()
+    trash.mock(side_effect=[httpx.Response(403, json={"error": "La sesión ha caducado."}),
+                            httpx.Response(201, json={"entry": {"id": "T2"}})])
+    row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
+    assert row["backup"]["gestor_trash_id"] == "T2" and trash.call_count == 2 and upload.call_count == 1
+
+
+@respx.mock
+async def test_type_picks_the_group_of_a_name_found_in_two(both):
+    _mock_pc()
+    _mock_gestor(entries=[{"path": "SM PLA - White.json", "name": "SM PLA - White", "kind": "filament"},
+                          {"path": "process/SM PLA - White.json", "name": "SM PLA - White", "kind": "process"}])
+    out = await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], type="filament")
+    row = out["presets"][0]
+    assert row["type"] == "filament" and row["action"] == "replace"
+    downloads = [c.request.url.params["path"] for c in respx.calls if c.request.url.path == "/api/download"]
+    assert downloads == ["SM PLA - White.json"]
+
+
+@respx.mock
+async def test_an_empty_gestor_copy_is_invalid_not_a_new_preset(both):
+    _mock_pc()
+    trash, upload, _ = _mock_gestor()
+    respx.get(f"{GESTOR}/api/download").mock(return_value=httpx.Response(200, content=b""))
+    row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
+    assert row["error"] == "gestor_file_invalid" and trash.call_count == 0 and upload.call_count == 0
+
+
+@respx.mock
+async def test_a_new_preset_name_that_is_not_a_safe_file_name_is_refused(both):
+    respx.get(f"{BASE}/presets").mock(return_value=httpx.Response(200, json={
+        "filament": [{"name": n, "system": False} for n in ("a/b", "a\\b", "..x")], "print": [], "printer": []}))
+    respx.post(f"{BASE}/preset/config").mock(side_effect=lambda r: httpx.Response(200, json={
+        "name": json.loads(r.read())["name"], "system": False, "config": PC}))
+    respx.get(f"{BASE}/status").mock(return_value=httpx.Response(200, json={
+        "presets": {"filaments": ["Other"]}, "modified": {}}))
+    _, upload, _ = _mock_gestor(entries=[])
+    out = await srv.sync_presets("pc_to_gestor", ["a/b", "a\\b", "..x"], dry_run=False)
+    assert [r["error"] for r in out["presets"]] == ["invalid_name"] * 3 and upload.call_count == 0
+
+
+@respx.mock
+async def test_edits_made_while_comparing_stop_the_push(both):
+    _mock_pc()
+    trash, upload, _ = _mock_gestor()
+    clean = {"presets": {"filaments": ["SM PLA - White"]}, "modified": {"filament": []}}
+    edited = {"presets": {"filaments": ["SM PLA - White"]}, "modified": {"filament": ["nozzle_temperature"]}}
+    respx.get(f"{BASE}/status").mock(side_effect=[httpx.Response(200, json=clean),
+                                                  httpx.Response(200, json=edited)])
+    row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
+    assert row["error"] == "unsaved_changes" and row["modified"] == ["nozzle_temperature"]
+    assert trash.call_count == 0 and upload.call_count == 0
+
+
+@respx.mock
+async def test_a_success_answer_that_is_not_json_is_a_gestor_error(both):
+    _mock_pc()
+    trash, upload, _ = _mock_gestor()
+    trash.mock(return_value=httpx.Response(201, content=b"<html>ok</html>"))
+    row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
+    assert row["error"] == "gestor_error" and "/api/trash" in row["detail"] and upload.call_count == 0
