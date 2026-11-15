@@ -3026,10 +3026,14 @@ async def _apply_and_save(c, ptype: str, name: str, start_name: str, start: dict
     if put:
         try:
             await c.restore_config({k: start[k] for k in changes if k in start})
-            failure["edits_discarded"] = True
+            left = _unsaved_in(await c.get_status(), ptype, start_name)
         except ApiError as e:
-            failure |= {"edits_discarded": False, "discard_error": str(e),
-                        "hint": "discard the unsaved edits of this preset in OrcaSlicer"}
+            return failure | {"edits_discarded": False, "discard_error": str(e),
+                              "hint": "discard the unsaved edits of this preset in OrcaSlicer"}
+        failure["edits_discarded"] = not left
+        if left:
+            failure |= {"still_modified": left[:_DIFF_LIMIT],
+                        "hint": "these edits could not be put back; discard them in OrcaSlicer"}
     return failure
 
 
@@ -3075,6 +3079,8 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
         row["skipped_hint"] = ("protected keys (custom G-code, scripts, printer connection) are never "
                                "written by the MCP; change them by hand in OrcaSlicer if needed")
     changes = {k: v for k, v in changes.items() if k not in blocked}
+    if start_name == name and not changes and blocked:
+        return row | {"action": "none", "status": "only_protected_keys_differ"}
     row["start_from"] = start_name
     row["keys_to_write"] = len(changes)
     if dry_run:
@@ -3130,7 +3136,8 @@ async def sync_presets(
     then selects again what was selected before. It refuses while any preset group has unsaved
     edits in the PC (selecting would discard them), saves a JSON copy of the PC's previous
     version in ~/.cache/orcaslicer-mcp/preset-backups/ first, and reports instead of writing the
-    protected keys (custom G-code, scripts, printer connection). Run with dry_run=True first and
+    protected keys (custom G-code, scripts, printer connection), writing nothing when they are
+    the only difference. Run with dry_run=True first and
     show the user the differences."""
     if direction != "compare" and not names:
         return {"error": "names_required", "detail": f"name the presets to copy; {direction} never copies everything"}
