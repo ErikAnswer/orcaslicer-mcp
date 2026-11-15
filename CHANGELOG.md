@@ -7,6 +7,12 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+- `apply_calibration` writes the value picked from a calibration test into a filament preset with the right keys: PA tests set `pressure_advance` and turn `enable_pressure_advance` on; `flow_rate` scales `filament_flow_ratio` by (100 + modifier) / 100, or adds the offset of the linear (YOLO) test, from the stored value; `temp_tower`, `max_volumetric_speed` and `retraction` set `nozzle_temperature`, `filament_max_volumetric_speed` and `filament_retraction_length`. It saves through `edit_preset`, so the physics gate applies, and `dry_run` shows the change without saving.
+
+### Fixed
+- The retraction check reads the filament's `filament_retraction_length` override when it is set, instead of judging only the printer's `retraction_length`.
+
 ## [0.1.17] - 2026-10-12
 
 ### Added

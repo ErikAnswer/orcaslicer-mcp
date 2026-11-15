@@ -18,6 +18,7 @@ from . import settings_schema
 from . import placement
 from .knowledge_index import load_knowledge, search_knowledge
 from .physics_check import run_checks, CHECK_LAYERS
+from .calibration_apply import CalibrationValueError, calibration_changes
 from .breakdown import build_breakdown
 from .compare import compute_comparison
 from .guard import allow_override_warnings
@@ -1129,6 +1130,47 @@ async def edit_preset(type: str, name: str, changes: dict) -> dict:
 
 
 @mcp.tool()
+async def apply_calibration(
+    filament: Annotated[str, Field(description="Name of the user filament preset to update, as shown by list_presets.")],
+    test: Annotated[Literal["pa_line", "pa_pattern", "pa_tower", "flow_rate", "temp_tower",
+                            "max_volumetric_speed", "retraction", "vfa"],
+                    Field(description="The calibration test the value was read from.")],
+    value: Annotated[float, Field(description="The value picked from the printed test: PA value, flow modifier as printed on the chosen block, temperature in °C, volumetric speed in mm³/s or retraction length in mm.")],
+    linear: Annotated[bool, Field(description="flow_rate only: True for the linear (YOLO) test, whose blocks show an absolute flow ratio offset instead of a percent.")] = False,
+    dry_run: Annotated[bool, Field(description="Return the computed changes without saving anything.")] = False,
+) -> dict:
+    """Write the result of a calibration test into a filament preset with the right keys. PA tests
+    set pressure_advance and turn enable_pressure_advance on; flow_rate sets filament_flow_ratio to
+    current x (100 + modifier) / 100, or current + modifier with linear=True (both read from the
+    stored preset); temp_tower sets nozzle_temperature; max_volumetric_speed sets
+    filament_max_volumetric_speed (pass it already reduced if you want a margin); retraction sets
+    the filament's filament_retraction_length override. vfa is refused: it has no preset key.
+    Saving goes through edit_preset, so the physics gate applies and unsaved changes in the open
+    project are discarded (the calibration generator's temporary overrides never reach the preset).
+    Use dry_run=True first to show the user the change."""
+    try:
+        async with _client() as c:
+            stored = (await c.get_preset_config("filament", filament)).get("config", {})
+    except ApiError as e:
+        return _m4a_err(e)
+    try:
+        plan = calibration_changes(test, value, stored, linear)
+    except CalibrationValueError as e:
+        return {"error": "invalid_calibration_value", "detail": str(e)}
+    out = {"filament": filament, "test": test, "changes": plan.changes, "previous": plan.previous}
+    if plan.warnings:
+        out["warnings"] = plan.warnings
+    if dry_run:
+        return out | {"dry_run": True,
+                      "note": "the physics gate and key guard run only when saving; preview them "
+                              "with check_profile_physics(changes) on the open project"}
+    saved = await edit_preset("filament", filament, plan.changes)
+    if saved.get("error"):
+        return saved | {"changes": plan.changes, "previous": plan.previous}
+    return out | saved
+
+
+@mcp.tool()
 async def rename_preset(
     type: Annotated[str, Field(description="Preset group: 'print', 'filament', or 'printer'.")],
     old_name: Annotated[str, Field(description="Current name of the user preset to rename, as shown by list_presets.")],
@@ -1583,6 +1625,7 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
     "rename_preset": ("Rename preset", False, False),
     "save_preset": ("Save preset (overwrites stored settings)", False, True),
     "edit_preset": ("Edit preset (overwrites stored settings)", False, True),
+    "apply_calibration": ("Apply calibration result to filament preset", False, True),
     "delete_object": ("Delete object from plate", False, True),
     "delete_plate": ("Delete plate (its objects are parked off-plate)", False, True),
     "delete_preset": ("Delete preset", False, True),
