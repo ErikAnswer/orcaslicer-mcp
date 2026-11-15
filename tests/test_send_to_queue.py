@@ -219,3 +219,108 @@ async def test_job_leaving_the_queue_while_holding_is_reported():
     _orca_ok()
     out = await srv.send_to_queue(hold=True)
     assert out["held"] is False and "left the queue" in out["hold_error"]
+
+
+@respx.mock
+async def test_hold_sent_but_not_read_back_is_unverified():
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([NEW]), httpx.ConnectError("down")])
+    action = respx.post(f"{GESTOR}/api/queue/action").mock(return_value=httpx.Response(200, json={}))
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert action.called and out["queue_confirmed"] is True
+    assert out["held"] is None and "could not be read back" in out["hold_detail"]
+    assert "hold_error" not in out and out["job"]["status"] == "queued"
+
+
+@respx.mock
+async def test_hold_retries_once_with_a_fresh_token_on_403():
+    held = NEW | {"status": "held"}
+    fresh = httpx.Response(200, json={"mutationToken": "tok2", "queue": {"jobs": [NEW], "history": []}})
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([NEW]), fresh, _state([held])])
+    action = respx.post(f"{GESTOR}/api/queue/action").mock(side_effect=[
+        httpx.Response(403, json={"error": "token"}), httpx.Response(200, json={})])
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["held"] is True and action.call_count == 2
+    assert [c.request.headers["X-Cad3d-Token"] for c in action.calls] == ["tok", "tok2"]
+
+
+@respx.mock
+async def test_null_queue_reads_as_empty():
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[
+        httpx.Response(200, json={"mutationToken": "tok", "queue": None}), _state([NEW])])
+    _orca_ok()
+    out = await srv.send_to_queue()
+    assert out["queue_confirmed"] is True and out["job"]["id"] == "new1"
+
+
+@respx.mock
+async def test_non_object_queue_before_sending_is_unconfirmed():
+    respx.get(f"{GESTOR}/api/state").mock(return_value=httpx.Response(
+        200, json={"mutationToken": "tok", "queue": [OLD]}))
+    orca = _orca_ok()
+    out = await srv.send_to_queue()
+    assert orca.called and out["queue_confirmed"] is False
+    assert "queue is not a JSON object" in out["queue_detail"]
+
+
+@respx.mock
+async def test_non_object_queue_with_hold_sends_nothing():
+    respx.get(f"{GESTOR}/api/state").mock(return_value=httpx.Response(
+        200, json={"mutationToken": "tok", "queue": "x"}))
+    orca = _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["error"] == "gestor_unreachable" and not orca.called
+
+
+@respx.mock
+async def test_jobs_without_id_neither_hide_nor_become_the_new_job():
+    anon = {"filename": "anon.gcode.3mf", "status": "queued"}
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([anon]), _state([anon, NEW])])
+    _orca_ok()
+    out = await srv.send_to_queue()
+    assert out["queue_confirmed"] is True and out["job"]["id"] == "new1"
+
+
+def test_known_ids_skip_jobs_without_id():
+    queue = {"jobs": [{"filename": "a"}, OLD], "history": [{"id": None}, DONE], "current": None}
+    assert srv._queue_known_ids(queue) == {"old", "done"}
+
+
+@respx.mock
+async def test_hold_lost_answer_is_checked_in_the_queue():
+    held = NEW | {"status": "held"}
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([NEW]), _state([held])])
+    respx.post(f"{GESTOR}/api/queue/action").mock(side_effect=httpx.ReadTimeout("lost"))
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["held"] is True and out["job"]["status"] == "held"
+
+
+@respx.mock
+async def test_hold_lost_answer_and_unreadable_queue_is_unverified():
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([NEW]), httpx.ConnectError("down")])
+    respx.post(f"{GESTOR}/api/queue/action").mock(side_effect=httpx.ReadTimeout("lost"))
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["held"] is None and "could not be read back" in out["hold_detail"]
+
+
+@respx.mock
+async def test_hold_lost_answer_with_job_still_queued_is_not_held():
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([NEW]), _state([NEW])])
+    respx.post(f"{GESTOR}/api/queue/action").mock(side_effect=httpx.ConnectError("down"))
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["held"] is False and "instead of held" in out["hold_error"]
+    assert "the hold request failed" in out["hold_error"] and "down" in out["hold_error"]
+
+
+@respx.mock
+async def test_new_job_without_id_is_reported_as_unidentifiable(monkeypatch):
+    monkeypatch.setattr(srv, "QUEUE_CONFIRM_ATTEMPTS", 2)
+    anon = {"filename": "cube.gcode.3mf", "status": "queued"}
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([anon]), _state([anon])])
+    _orca_ok()
+    out = await srv.send_to_queue()
+    assert out["queue_confirmed"] is False and "have no id" in out["queue_detail"]
