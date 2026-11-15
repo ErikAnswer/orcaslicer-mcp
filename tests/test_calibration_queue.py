@@ -47,7 +47,10 @@ async def test_unsaved_project_is_reported_not_discarded():
 
 
 @respx.mock
-async def test_send_to_queue_reports_upload_and_errors_keep_detail():
+async def test_send_to_queue_reports_upload_and_errors_keep_detail(monkeypatch):
+    monkeypatch.setenv("ORCA_GESTOR_URL", "http://g")
+    monkeypatch.setattr(srv, "QUEUE_CONFIRM_ATTEMPTS", 1)
+    respx.get("http://g/api/state").mock(return_value=httpx.Response(200, json={"queue": {"jobs": []}}))
     route = respx.post(f"{BASE}/print/queue")
     route.mock(return_value=httpx.Response(202, json={"sent": True, "upload": {"gcodeToolCnt": "1"}}))
     assert (await srv.send_to_queue())["sent"] is True
