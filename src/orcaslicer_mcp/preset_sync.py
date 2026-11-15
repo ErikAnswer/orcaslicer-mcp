@@ -10,11 +10,11 @@ import json
 from dataclasses import dataclass, field
 
 from . import settings_schema
+from .guard import REDACTED
 
 GESTOR_KIND = {"print": "process", "filament": "filament", "printer": "machine"}
 SETTINGS_ID_KEY = {"print": "print_settings_id", "filament": "filament_settings_id",
                    "printer": "printer_settings_id"}
-REDACTED = "<redacted>"
 FILE_ONLY_KEYS = frozenset({"name", "from", "version", "type", "inherits", "is_custom_defined",
                             "instantiation", "setting_id", "filament_id", "description", "url",
                             "renamed_from"})

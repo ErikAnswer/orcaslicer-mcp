@@ -194,3 +194,78 @@ async def test_unreachable_gestor_is_reported(both):
     respx.get(f"{GESTOR}/api/state").mock(side_effect=httpx.ConnectError("down"))
     out = await srv.sync_presets()
     assert out["error"] == "gestor_error" and "not reachable" in out["detail"]
+
+
+@respx.mock
+async def test_a_failed_restore_keeps_the_trash_id_in_the_answer(both):
+    _mock_pc()
+    _, upload, restore = _mock_gestor()
+    upload.mock(return_value=httpx.Response(400, json={"error": "bad"}))
+    restore.mock(return_value=httpx.Response(500, json={"error": "down"}))
+    row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
+    assert row["restored"] is False and row["backup"]["gestor_trash_id"] == "T1"
+
+
+@respx.mock
+async def test_a_gestor_copy_changed_meanwhile_is_not_replaced(both):
+    _mock_pc()
+    trash, upload, _ = _mock_gestor()
+    respx.get(f"{GESTOR}/api/download").mock(side_effect=[
+        httpx.Response(200, content=json.dumps(GESTOR_FILE).encode()),
+        httpx.Response(200, content=json.dumps(GESTOR_FILE | {"nozzle_temperature": ["205"]}).encode())])
+    row = (await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False))["presets"][0]
+    assert row["error"] == "gestor_changed" and trash.call_count == 0 and upload.call_count == 0
+
+
+@respx.mock
+async def test_one_failing_preset_keeps_the_other_results(both):
+    _mock_pc()
+    _mock_gestor(entries=[{"path": "SM PLA - White.json", "name": "SM PLA - White", "kind": "filament"},
+                          {"path": "0.20mm.json", "name": "0.20mm", "kind": "process"}])
+    respx.get(f"{GESTOR}/api/download").mock(side_effect=[
+        httpx.Response(200, content=b"{not json"), httpx.Response(404, json={"error": "gone"})])
+    rows = {r["name"]: r for r in (await srv.sync_presets())["presets"]}
+    assert rows["0.20mm"]["error"] == "gestor_error" and rows["0.20mm"]["status"] == 404
+    assert rows["SM PLA - White"]["error"] == "gestor_file_invalid"
+
+
+@respx.mock
+async def test_a_name_in_two_groups_needs_a_type(both):
+    _mock_pc()
+    _mock_gestor(entries=[{"path": "SM PLA - White.json", "name": "SM PLA - White", "kind": "process"}])
+    out = await srv.sync_presets("pc_to_gestor", ["SM PLA - White"])
+    assert out["error"] == "ambiguous_name" and sorted(out["types"]) == ["filament", "print"]
+
+
+@respx.mock
+async def test_long_differences_are_truncated_with_the_full_count(both):
+    many = {f"k{i}": str(i) for i in range(60)}
+    result = ps.Comparison([ps.Difference(k, v, None) for k, v in many.items()])
+    rows = srv._diff_rows(result)
+    assert len(rows["differences"]) == srv._DIFF_LIMIT and rows["difference_count"] == 60
+
+
+@respx.mock
+async def test_redacted_credentials_keep_the_gestor_value_through_the_tool(both):
+    _mock_pc()
+    _, upload, _ = _mock_gestor()
+    secret_pc = PC | {"printhost_apikey": "<redacted>"}
+    respx.post(f"{BASE}/preset/config").mock(side_effect=lambda r: httpx.Response(200, json={
+        "name": json.loads(r.read())["name"], "system": False,
+        "config": secret_pc if json.loads(r.read())["name"] == "SM PLA - White" else PARENT}))
+    respx.get(f"{GESTOR}/api/download").mock(return_value=httpx.Response(
+        200, content=json.dumps(GESTOR_FILE | {"printhost_apikey": "keep"}).encode()))
+    await srv.sync_presets("pc_to_gestor", ["SM PLA - White"], dry_run=False)
+    assert json.loads(upload.calls.last.request.read())["printhost_apikey"] == "keep"
+
+
+def test_escaping_survives_separators_quotes_and_backslashes():
+    assert ps.unescape_strings('"a;b";"c\\\\d"; e') == ["a;b", "c\\d", "e"]
+    assert ps.from_api("compatible_printers", '"Creator 5 Pro 0.4 - Queue";FF') == ["Creator 5 Pro 0.4 - Queue", "FF"]
+
+
+def test_a_bad_gestor_timeout_is_a_clear_error(monkeypatch):
+    from orcaslicer_mcp.gestor import GestorError, load_gestor_config
+    monkeypatch.setenv("ORCA_GESTOR_TIMEOUT", "soon")
+    with pytest.raises(GestorError):
+        load_gestor_config()

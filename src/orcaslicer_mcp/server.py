@@ -1278,10 +1278,16 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
     try:
         uploaded = await g.upload(filename, content)
     except GestorError as e:
-        if backup and backup.get("id"):
+        if not (backup and backup.get("id")):
+            return row | {"error": "upload_failed", "detail": str(e)}
+        try:
             await g.restore(backup["id"])
-            return row | {"error": "upload_failed", "detail": str(e), "restored": True}
-        return row | {"error": "upload_failed", "detail": str(e)}
+        except GestorError as restore_error:
+            return row | {"error": "upload_failed", "detail": str(e), "restored": False,
+                          "restore_error": str(restore_error),
+                          "backup": {"gestor_trash_id": backup["id"],
+                                     "hint": "the previous copy is still in the Gestor 3D trash (Papelera); restore it there"}}
+        return row | {"error": "upload_failed", "detail": str(e), "restored": True}
     row |= {"written": uploaded.get("path", filename)}
     if backup:
         row["backup"] = {"gestor_trash_id": backup.get("id"),
@@ -1331,15 +1337,23 @@ async def sync_presets(
                 targets = sorted({(t, n) for t in types for n in pc_names[t]}
                                  | {(t, e["name"]) for t in types for e in gestor_entries
                                     if e.get("kind") == _psync.GESTOR_KIND[t]})
+            status = await c.get_status() if direction == "pc_to_gestor" else {}
             results = []
-            if direction == "compare":
-                for t, n in targets:
-                    results.append(await _sync_one_compare(c, g, t, n, _match_gestor(gestor_entries, t, n)))
-            else:
-                status = await c.get_status()
-                for t, n in targets:
-                    results.append(await _push_one(c, g, t, n, _match_gestor(gestor_entries, t, n),
-                                                   status, dry_run))
+            for t, n in targets:
+                entry = _match_gestor(gestor_entries, t, n)
+                try:
+                    if direction == "compare":
+                        results.append(await _sync_one_compare(c, g, t, n, entry))
+                    else:
+                        results.append(await _push_one(c, g, t, n, entry, status, dry_run))
+                except GestorError as e:
+                    results.append({"type": t, "name": n, "error": "gestor_error",
+                                    "status": e.status, "detail": str(e)})
+                except ApiError as e:
+                    results.append({"type": t, "name": n} | _err(e))
+                except ValueError as e:
+                    results.append({"type": t, "name": n, "error": "gestor_file_invalid",
+                                    "detail": f"the Gestor copy is not a JSON preset: {e}"})
             return {"direction": direction, "presets": results}
     except GestorError as e:
         return {"error": "gestor_error", "status": e.status, "detail": str(e)}

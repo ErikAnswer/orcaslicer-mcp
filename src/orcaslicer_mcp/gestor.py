@@ -21,9 +21,16 @@ class GestorConfig:
 
 
 def load_gestor_config() -> GestorConfig:
+    raw_timeout = os.environ.get("ORCA_GESTOR_TIMEOUT", "20")
+    try:
+        timeout = float(raw_timeout)
+    except ValueError as e:
+        raise GestorError(f"ORCA_GESTOR_TIMEOUT must be a number of seconds, got {raw_timeout!r}") from e
+    if not timeout > 0:
+        raise GestorError(f"ORCA_GESTOR_TIMEOUT must be positive, got {raw_timeout!r}")
     return GestorConfig(
         base_url=os.environ.get("ORCA_GESTOR_URL", "http://192.168.1.17").rstrip("/"),
-        timeout=float(os.environ.get("ORCA_GESTOR_TIMEOUT", "20")))
+        timeout=timeout)
 
 
 class GestorClient:
