@@ -380,19 +380,27 @@ async def test_restore_selection_leaves_matching_and_missing_slots_alone():
 
 def test_one_item_vectors_match_the_per_variant_vectors_of_orcaslicer_2_5():
     variants = ["Direct Drive Standard", "Direct Drive High Flow", "Bowden Standard"]
-    assert ps.same_value("nozzle_temperature", "230,230,230", ["230"])
-    assert ps.same_value("filament_extruder_variant", variants, ["Direct Drive Standard"])
-    assert not ps.same_value("filament_extruder_variant", variants, ["Bowden Standard"])
-    assert not ps.same_value("nozzle_temperature", "230,235,230", ["230"])
-    assert not ps.same_value("nozzle_temperature", "230,230", ["230", "235", "230"])
-    assert not ps.same_value("nozzle_temperature", "", ["230"])
+    assert ps.same_value("nozzle_temperature", "230,230,230", ["230"], per_variant=True)
+    assert ps.same_value("filament_extruder_variant", variants, ["Direct Drive Standard"], per_variant=True)
+    assert not ps.same_value("filament_extruder_variant", variants, ["Bowden Standard"], per_variant=True)
+    assert not ps.same_value("nozzle_temperature", "230,235,230", ["230"], per_variant=True)
+    assert not ps.same_value("nozzle_temperature", "230,230", ["230", "235", "230"], per_variant=True)
+    assert not ps.same_value("nozzle_temperature", "", ["230"], per_variant=True)
     pc = PC | {"nozzle_temperature": "210,210,210", "pressure_advance": "0.036,0.036,0.036",
                "filament_extruder_variant": '"Direct Drive Standard";"Direct Drive High Flow";"Bowden Standard"'}
     file = GESTOR_FILE | {"filament_extruder_variant": ["Direct Drive Standard"]}
-    comparison = ps.compare(pc, file, PARENT)
+    comparison = ps.compare(pc, file, PARENT, per_variant=True)
     assert {d.key for d in comparison.differences} == {"filament_flow_ratio", "pressure_advance"}
-    changes = ps.target_changes(file, pc, PARENT)
+    changes = ps.target_changes(file, pc, PARENT, per_variant=True)
     assert changes == {"filament_flow_ratio": "0.98", "pressure_advance": "0.025,0.025,0.025"}
+
+
+def test_printer_and_print_vectors_keep_their_length_strict():
+    assert not ps.same_value("nozzle_diameter", "0.4,0.4", ["0.4"])
+    assert ps.fit_to_current("nozzle_diameter", ["0.4"], ["0.4", "0.4"]) == ["0.4"]
+    machine = {"inherits": "", "nozzle_diameter": "0.4,0.4"}
+    assert {d.key for d in ps.compare(machine, {"nozzle_diameter": ["0.4"]}, {}).differences} == {"nozzle_diameter"}
+    assert ps.target_changes({"nozzle_diameter": ["0.4"]}, machine, {}) == {"nozzle_diameter": "0.4"}
 
 
 @respx.mock

@@ -2883,7 +2883,7 @@ async def _sync_one_compare(c, g, ptype: str, name: str, gestor_entry: dict | No
     if pc is None:
         return row | {"status": "only_gestor", "gestor_path": gestor_entry["path"]}
     parent = await _parent_config(c, ptype, gestor_file.get("inherits", "") or "")
-    comparison = _psync.compare(pc, gestor_file, parent)
+    comparison = _psync.compare(pc, gestor_file, parent, ptype == "filament")
     row |= {"status": "different" if comparison.differences else "same",
             "gestor_path": gestor_entry["path"]}
     return row | (_diff_rows(comparison) if comparison.differences else {})
@@ -2925,7 +2925,8 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
     new_file = _psync.build_file(ptype, name, pc, parent, existing)
     content = _psync.dump_file(new_file)
     if existing is not None:
-        comparison = _psync.compare(pc, existing, await _parent_config(c, ptype, existing.get("inherits", "") or ""))
+        comparison = _psync.compare(pc, existing, await _parent_config(c, ptype, existing.get("inherits", "") or ""),
+                                    ptype == "filament")
         if not comparison.differences:
             return row | {"action": "none", "status": "same"}
         row |= {"action": "replace"} | _diff_rows(comparison)
@@ -3076,13 +3077,13 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
         return row | {"error": "no_base",
                       "detail": "the Gestor file inherits from nothing and the PC has no preset with this name to start from"}
     if pc is not None:
-        comparison = _psync.compare(pc, gestor_file, parent)
+        comparison = _psync.compare(pc, gestor_file, parent, ptype == "filament")
         if not comparison.differences:
             return row | {"action": "none", "status": "same"}
         row |= {"action": "replace"} | _diff_rows(comparison)
     else:
         row |= {"action": "create"}
-    changes = _psync.target_changes(gestor_file, start, parent)
+    changes = _psync.target_changes(gestor_file, start, parent, ptype == "filament")
     blocked = set(sensitive_keys(changes))
     if blocked:
         row["skipped_keys"] = [{"key": k, "gestor": gestor_file.get(k),
@@ -3115,7 +3116,8 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
         row["reselect_error"] = str(e)
     if failure:
         return row | failure
-    after = _psync.compare((await c.get_preset_config(ptype, name)).get("config", {}), gestor_file, parent)
+    after = _psync.compare((await c.get_preset_config(ptype, name)).get("config", {}), gestor_file, parent,
+                           ptype == "filament")
     left = [d.key for d in after.differences if d.key not in blocked]
     row["written"] = True
     row["verified"] = not left
