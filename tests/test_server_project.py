@@ -75,7 +75,7 @@ async def test_get_project_needs_fork_15(monkeypatch):
 @respx.mock
 @respx.mock
 @respx.mock
-# --- open_project / open_recent_project ------------------------------------------------
+# --- open_project ---------------------------------------------------------------------
 
 @respx.mock
 @respx.mock

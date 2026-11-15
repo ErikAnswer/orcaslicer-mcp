@@ -6,14 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.1.25-erik.1] - 2026-11-15
-Our fork (ErikAnswer) on top of orcaslicer-mcp 0.1.25. Every route the 0.1.18-0.1.25 tools use (filament slots, Bambu Lab reads, the 2.5 temperature check) is in the fork build `erik-v2.5.0-mcp.16`, which carries all of MaxEllis's remote-api-250 (his v2.5.0-mcp.18).
+Our fork (ErikAnswer) on top of orcaslicer-mcp 0.1.25; the package version stays 0.1.25 and the -erik.N suffix lives only in the git tag, as with 0.1.17-erik.N. Every route the 0.1.18-0.1.25 tools use (filament slots, Bambu Lab reads, the 2.5 temperature check) is in the fork build `erik-v2.5.0-mcp.16`, which carries all of MaxEllis's remote-api-250 (his v2.5.0-mcp.18).
 
 ### Changed
 - Merged orcaslicer-mcp 0.1.18-0.1.25. The project tools keep our contract: `list_projects`, `save_project` and `open_project` work by name inside the "OrcaSlicer MCP" folder of the PC Documents. The upstream path tools (`open_recent_project`, `list_recent_projects`, `forget_recent_project`, `browse_projects`, `move_project_file`, `delete_project_file`) are left out; `get_project` and `new_project` stay.
 - The first line of our tools' descriptions is now one whole sentence, like the upstream tools.
 
 ### Removed
-- Publishing to PyPI, the MCP registry and OrcaCloud (`scripts/cut-release.sh`, `scripts/cut-plugin-release.sh`, `.github/workflows/publish-*.yml`, `plugin/orcacloud/`): this fork is installed from its git tags.
+- Publishing to PyPI, the MCP registry and OrcaCloud (`scripts/cut-release.sh`, `scripts/cut-plugin-release.sh`, `.github/workflows/publish-*.yml`, `packaging/server.json`, `plugin/orcacloud/`): this fork is installed from its git tags.
 
 ### Changed (0.1.17-erik.3 to erik.9)
 - `save_project` and `open_project` use the project routes of OrcaSlicer 2.5 (fork `erik-v2.5.0-mcp.16`): the tool still takes a name only, checks it itself and sends the path inside the "OrcaSlicer MCP" folder that `list_projects` reports. Opening an unlisted name is refused (`unknown_project`) and unsaved preset edits are still refused (`unsaved_presets`) before the call; unsaved project changes now come back as `unsaved_changes`, and a project with its own scripts, G-code or printer connection as `blocked_by_remote_api_policy` (OrcaSlicer's Remote API policy). Replacing another project with `overwrite` also needs "Allow deleting and replacing project files" in OrcaSlicer. On a 2.4.2 build these tools say they need `erik-v2.5.0-mcp.16`.
