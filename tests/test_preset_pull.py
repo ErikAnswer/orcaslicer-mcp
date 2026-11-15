@@ -33,6 +33,8 @@ class FakeOrca:
         self.modified = modified or {}
         self.selected = {"print": "p", "printer": "q", "filament": [selected, "Other 2"]}
         self.edited: dict = {}
+        self.edited_from: str | None = None
+        self.put_errors: dict = {}
         self.writes: list = []
 
     def install(self):
@@ -43,10 +45,14 @@ class FakeOrca:
         respx.get(f"{BASE}/status").mock(side_effect=lambda r: httpx.Response(200, json={
             "presets": {"print": self.selected["print"], "printer": self.selected["printer"],
                         "filaments": list(self.selected["filament"])},
-            "modified": {"print": [], "printer": [], "filament": []} | self.modified}))
+            "modified": {"print": [], "printer": [], "filament": self._edited_keys()} | self.modified}))
         respx.put(f"{BASE}/preset").mock(side_effect=self._select)
         respx.put(f"{BASE}/config").mock(side_effect=self._put)
         respx.post(f"{BASE}/preset/save").mock(side_effect=self._save)
+
+    def _edited_keys(self) -> list:
+        saved = self.presets.get(self.edited_from, {}) if self.edited_from else {}
+        return sorted(k for k, v in self.edited.items() if saved.get(k) != v)
 
     def _config(self, request):
         name = json.loads(request.read())["name"]
@@ -68,8 +74,9 @@ class FakeOrca:
     def _put(self, request):
         changes = json.loads(request.read())
         self.writes.append(("put", changes))
-        self.edited |= changes
-        return httpx.Response(200, json={"applied": sorted(changes)})
+        errors, self.put_errors = self.put_errors, {}
+        self.edited |= {k: v for k, v in changes.items() if k not in errors}
+        return httpx.Response(200, json={"applied": sorted(set(changes) - set(errors)), "errors": errors})
 
     def _save(self, request):
         body = json.loads(request.read())
@@ -78,6 +85,7 @@ class FakeOrca:
         self.presets[body["name"]] = self.edited | {"inherits": inherits,
                                                     "filament_settings_id": f"\"{body['name']}\""}
         self.selected["filament"][0] = body["name"]
+        self.edited, self.edited_from = dict(self.presets[body["name"]]), body["name"]
         return httpx.Response(200, json={"saved": body["name"]})
 
 
@@ -284,3 +292,82 @@ async def test_a_failed_save_on_the_selected_preset_discards_the_half_applied_ed
     assert row["reselected"] == []
     assert pc.writes[-1] == ("put", {"filament_flow_ratio": "0.95", "pressure_advance": "0.036"})
     assert pc.edited == PC
+
+
+@respx.mock
+async def test_only_protected_differences_leave_the_pc_alone(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.install()
+    _gestor(GESTOR_FILE | {"pressure_advance": ["0.036"], "filament_flow_ratio": ["0.95"],
+                           "filament_start_gcode": ["M104 S0"]})
+    for dry_run in (True, False):
+        row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=dry_run))["presets"][0]
+        assert row["action"] == "none" and row["status"] == "only_protected_keys_differ"
+        assert [s["key"] for s in row["skipped_keys"]] == ["filament_start_gcode"]
+        assert "written" not in row and "backup" not in row
+    assert pc.writes == [] and not both.exists()
+
+
+@respx.mock
+async def test_refused_keys_are_reported_and_the_rest_put_back(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected=NAME)
+    pc.install()
+    pc.put_errors = {"pressure_advance": "out_of_range"}
+    _gestor()
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "invalid_keys" and row["errors"] == {"pressure_advance": "out_of_range"}
+    assert row["edits_discarded"] is True and "still_modified" not in row
+    assert not any(w[0] == "save" for w in pc.writes)
+    assert pc.edited == PC and pc.presets[NAME] == PC
+
+
+@respx.mock
+async def test_a_new_key_left_after_the_rollback_is_reported(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected=NAME)
+    pc.install()
+    respx.post(f"{BASE}/preset/save").mock(return_value=httpx.Response(
+        409, json={"error": "temperature_pairs_unsafe"}))
+    _gestor(GESTOR_FILE | {"filament_cooling_final_speed": ["3.4"]})
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "write_failed" and row["edits_discarded"] is False
+    assert row["still_modified"] == ["filament_cooling_final_speed"] and "hint" in row
+    assert pc.presets[NAME] == PC
+
+
+class SelectionClient:
+    def __init__(self, presets: dict, printer_switches: dict | None = None):
+        self.presets = presets
+        self.printer_switches = printer_switches or {}
+        self.selects: list = []
+
+    async def get_status(self):
+        return {"presets": {k: list(v) if isinstance(v, list) else v for k, v in self.presets.items()}}
+
+    async def select_preset(self, ptype, name, slot=None):
+        self.selects.append((ptype, name, slot))
+        if ptype == "filament":
+            self.presets["filament"][slot] = name
+            return
+        self.presets[ptype] = name
+        if ptype == "printer":
+            self.presets |= self.printer_switches
+
+
+async def test_restore_selection_puts_back_printer_print_and_every_filament_slot():
+    before = {"printer": "C5P 0.4", "print": "0.20 Standard", "filament": ["PLA A", "PETG B", "TPU C"]}
+    c = SelectionClient({"printer": "Other printer", "print": "0.20 Standard", "filament": ["SM PLA", "PETG B", "X"]},
+                        printer_switches={"print": "0.16 Fine", "filament": ["PLA A", "Y", "X"]})
+    restored = await srv._restore_selection(c, before)
+    assert c.presets == before
+    assert restored == [{"type": "printer", "name": "C5P 0.4"}, {"type": "print", "name": "0.20 Standard"},
+                        {"type": "filament", "name": "PETG B", "slot": 1},
+                        {"type": "filament", "name": "TPU C", "slot": 2}]
+    assert [s[0] for s in c.selects[:2]] == ["printer", "print"]
+
+
+async def test_restore_selection_leaves_matching_and_missing_slots_alone():
+    before = {"printer": "q", "print": "p", "filament": ["A", "B", "C"]}
+    c = SelectionClient({"printer": "q", "print": "p", "filament": ["A", "Z"]})
+    restored = await srv._restore_selection(c, before)
+    assert restored == [{"type": "filament", "name": "B", "slot": 1}]
+    assert c.selects == [("filament", "B", 1)]
