@@ -45,6 +45,26 @@ def test_canonical_ignores_number_spelling_and_splits_vectors_given_as_text():
     assert ps.canonical("filament_flow_ratio", ["1"]) != ps.canonical("filament_flow_ratio", ["0.98"])
 
 
+def test_options_declared_in_loops_take_their_vector_shape():
+    assert ps.from_api("machine_max_acceleration_x", "30000,20000") == ["30000", "20000"]
+    assert ps.from_api("machine_max_jerk_e", "2.5,2.5") == ["2.5", "2.5"]
+    assert ps.from_api("filament_retraction_length", "0.6") == ["0.6"]
+    assert ps.from_api("filament_retraction_length", "nil") == ["nil"]
+    assert ps.from_api("filament_wipe", "1") == ["1"]
+    assert ps.from_api("filament_z_hop_types", "Auto Lift") == ["Auto Lift"]
+    assert ps.option_type("machine_max_speed_w") is None
+    assert ps.option_type("filament_unknown_option") is None
+
+
+def test_compare_ignores_the_shape_of_loop_declared_options():
+    pc = {"inherits": "", "machine_max_speed_x": "600,600", "filament_retraction_speed": "30",
+          "filament_retraction_length": "0.8"}
+    gestor = {"inherits": "", "machine_max_speed_x": ["600", "600"],
+              "filament_retraction_speed": ["30"], "filament_retraction_length": ["0.6"]}
+    assert [(d.key, d.pc, d.gestor) for d in ps.compare(pc, gestor, {}).differences] == [
+        ("filament_retraction_length", ["0.8"], ["0.6"])]
+
+
 def test_file_keeps_only_overrides_and_matches_the_gestor_format():
     out = ps.build_file("filament", "SM PLA - White", PC, PARENT)
     assert out == {"from": "User", "name": "SM PLA - White", "inherits": "Generic PLA @System",

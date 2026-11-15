@@ -25,13 +25,33 @@ _TYPE_OVERRIDES = {"print_settings_id": "coString", "printer_settings_id": "coSt
 _COMMA_VECTORS = frozenset({"coFloats", "coInts", "coBools", "coPercents", "coFloatsOrPercents",
                             "coEnums", "coPoints"})
 _RAW_STRING_EXCEPTIONS = frozenset({"bed_custom_texture", "bed_custom_model"})
+_FILAMENT_PREFIX = "filament_"
+_FILAMENT_EXTRUDER_OVERRIDE_KEYS = frozenset(_FILAMENT_PREFIX + key for key in (
+    "retraction_length", "z_hop", "z_hop_types", "retract_lift_above", "retract_lift_below",
+    "retract_lift_enforce", "retraction_speed", "deretraction_speed", "retract_restart_extra",
+    "retraction_minimum_travel", "retract_length_toolchange", "retract_restart_extra_toolchange",
+    "wipe_distance", "retract_when_changing_layer", "wipe", "retract_before_wipe",
+    "retract_after_wipe", "long_retractions_when_cut", "retraction_distances_when_cut"))
+_MACHINE_LIMIT_KEYS = frozenset(f"machine_max_{limit}_{axis}"
+                                for limit in ("speed", "acceleration", "jerk") for axis in "xyze")
 
 
 def option_type(key: str) -> str | None:
     if key in _TYPE_OVERRIDES:
         return _TYPE_OVERRIDES[key]
     record = settings_schema.describe(key)
-    return record.get("type") if record else None
+    if record:
+        return record.get("type")
+    return _generated_option_type(key)
+
+
+def _generated_option_type(key: str) -> str | None:
+    """Options PrintConfig.cpp declares in loops, which the extracted schema does not hold."""
+    if key in _MACHINE_LIMIT_KEYS:
+        return "coFloats"
+    if key in _FILAMENT_EXTRUDER_OVERRIDE_KEYS:
+        return option_type(key.removeprefix(_FILAMENT_PREFIX))
+    return None
 
 
 def unescape_string(text: str) -> str:
