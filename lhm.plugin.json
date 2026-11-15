@@ -250,6 +250,10 @@
       "description": "Rename a user preset by copying it to new_name, selecting the copy, and deleting the original. Only user presets can be renamed; system presets are read-only."
     },
     {
+      "name": "sync_presets",
+      "description": "Compare the user presets of the OrcaSlicer on the PC with the copies the Gestor 3D keeps for its own slicing (autoslice and Laminador), and copy PC presets there."
+    },
+    {
       "name": "get_gcode",
       "description": "Retrieve the last successful slice's G-code as text."
     },
