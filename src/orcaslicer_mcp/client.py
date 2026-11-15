@@ -142,6 +142,21 @@ class OrcaClient:
     async def delete_plate(self, index: int) -> dict:
         return await self._request("DELETE", f"/api/v1/plates/{index}")
 
+    async def clear_plate(self, all_plates: bool = False) -> dict:
+        return await self._request("POST", "/api/v1/plate/clear", json={"all_plates": all_plates})
+
+    # Projects (fork erik-v2.4.2-mcp.15 and later).
+    async def get_projects(self) -> dict:
+        return await self._request("GET", "/api/v1/projects")
+
+    async def save_project(self, name: str, overwrite: bool = False) -> dict:
+        return await self._request("POST", "/api/v1/project/save",
+                                   json={"name": name, "overwrite": overwrite}, timeout=130.0)
+
+    async def open_project(self, name: str, discard_unsaved: bool = False) -> dict:
+        return await self._request("POST", "/api/v1/project/open",
+                                   json={"name": name, "discard_unsaved": discard_unsaved}, timeout=130.0)
+
     async def set_object_plate(self, obj_id: int, plate: int, instance: int = 0) -> dict:
         return await self._request("POST", f"/api/v1/objects/{obj_id}/plate",
                                    json={"plate": plate, "instance": instance})

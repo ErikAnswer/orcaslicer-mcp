@@ -749,6 +749,81 @@ async def delete_plate(
         return _plates_err(e)
 
 
+def _projects_err(e: ApiError) -> dict:
+    return _m4_err(e, "fork erik-v2.4.2-mcp.15 or later")
+
+
+@mcp.tool()
+async def clear_plate(
+    all_plates: Annotated[bool, Field(description=(
+        "False (default) removes only the objects of the current plate; True removes every "
+        "object of the project, on all plates."))] = False,
+) -> dict:
+    """Remove every object of the current plate at once, like the plate's "Delete all" in
+    OrcaSlicer, instead of delete_object one by one. The plates themselves stay. The reply
+    gives how many objects were removed (removed) and how many are left (count).
+
+    This cannot be undone through the API: save_project first if the layout may be needed
+    again. Refused while a slice or an arrange/orient job is running (job_running)."""
+    try:
+        async with _client() as c:
+            return await c.clear_plate(all_plates)
+    except ApiError as e:
+        return _projects_err(e)
+
+
+@mcp.tool()
+async def list_projects() -> dict:
+    """List the projects saved for the API: the .3mf files in the "OrcaSlicer MCP" folder of
+    the PC's Documents (name, size_bytes, modified as a Unix time), plus that folder and the
+    project currently open (current, empty when it was never saved). Read-only."""
+    try:
+        async with _client() as c:
+            return await c.get_projects()
+    except ApiError as e:
+        return _projects_err(e)
+
+
+@mcp.tool()
+async def save_project(
+    name: Annotated[str, Field(description=(
+        "Project name, a plain file name without folders (\".3mf\" is optional), e.g. "
+        "\"soporte mando v2\"."))],
+    overwrite: Annotated[bool, Field(description=(
+        "Replace an existing project with the same name. Off by default (409 exists)."))] = False,
+) -> dict:
+    """Save the whole project (all plates, objects, their settings and the presets in use) as
+    <name>.3mf in the "OrcaSlicer MCP" folder of the PC's Documents, like File > Save project
+    as, and make it the open project. Only names are accepted, never paths. An empty project
+    is refused (empty)."""
+    try:
+        async with _client() as c:
+            return await c.save_project(name, overwrite)
+    except ApiError as e:
+        return _projects_err(e)
+
+
+@mcp.tool()
+async def open_project(
+    name: Annotated[str, Field(description=(
+        "Name of a project from list_projects (\".3mf\" is optional)."))],
+    discard_unsaved: Annotated[bool, Field(description=(
+        "Throw away unsaved changes of the current project. Ask the user first."))] = False,
+) -> dict:
+    """Open <name>.3mf from the "OrcaSlicer MCP" folder of the PC's Documents, like File > Open
+    project. It REPLACES the current project: with unsaved changes it is refused
+    (unsaved_project) unless discard_unsaved=True, so ask the user or save_project first.
+    Unsaved preset edits are always refused (unsaved_presets): they have to be saved or
+    discarded in OrcaSlicer. A project whose settings run a post-processing script is refused
+    (post_process) and stays a manual choice in OrcaSlicer. The reply lists the plates and the
+    objects with their new ids."""
+    try:
+        async with _client() as c:
+            return await c.open_project(name, discard_unsaved)
+    except ApiError as e:
+        return _projects_err(e)
+
+
 @mcp.tool()
 async def move_object_to_plate(
     object_id: Annotated[int, Field(description=(
@@ -1897,6 +1972,10 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
     "delete_object": ("Delete object from plate", False, True),
     "delete_plate": ("Delete plate (its objects are parked off-plate)", False, True),
     "delete_preset": ("Delete preset", False, True),
+    "clear_plate": ("Remove every object of the plate", False, True),
+    "list_projects": ("List saved projects", True, False),
+    "save_project": ("Save the project as a .3mf", False, True),
+    "open_project": ("Open a saved project (replaces the current one)", False, True),
     "get_printer_status": ("Get printer status", True, False),
     "wait_for_printer": ("Wait for the printer", True, False),
     "list_print_history": ("List print history", False, False),

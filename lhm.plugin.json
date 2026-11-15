@@ -162,6 +162,22 @@
       "description": "Delete a plate. The objects it held are NOT deleted: OrcaSlicer parks them beside the bed, as the toolbar's delete does, and the reply says how many were moved off-plate (objects_moved_off_plate). Use move_object_to_plate to put them somewhere printable."
     },
     {
+      "name": "clear_plate",
+      "description": "Remove every object of the current plate at once, like the plate's \"Delete all\" in OrcaSlicer, instead of delete_object one by one. The plates themselves stay. The reply gives how many objects were removed (removed) and how many are left (count)."
+    },
+    {
+      "name": "list_projects",
+      "description": "List the projects saved for the API: the .3mf files in the \"OrcaSlicer MCP\" folder of the PC's Documents (name, size_bytes, modified as a Unix time), plus that folder and the project currently open (current, empty when it was never saved). Read-only."
+    },
+    {
+      "name": "save_project",
+      "description": "Save the whole project (all plates, objects, their settings and the presets in use) as <name>.3mf in the \"OrcaSlicer MCP\" folder of the PC's Documents, like File > Save project as, and make it the open project. Only names are accepted, never paths. An empty project is refused (empty)."
+    },
+    {
+      "name": "open_project",
+      "description": "Open <name>.3mf from the \"OrcaSlicer MCP\" folder of the PC's Documents, like File > Open project. It REPLACES the current project: with unsaved changes it is refused (unsaved_project) unless discard_unsaved=True, so ask the user or save_project first."
+    },
+    {
       "name": "move_object_to_plate",
       "description": "Move an object onto another plate. Coming from a plate it keeps its position relative to that plate (front-left of plate 1 lands front-left of plate 2); coming from off-plate (parked beside the bed) it lands at the destination's centre."
     },
