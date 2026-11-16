@@ -690,6 +690,18 @@ async def test_a_printer_saved_again_from_another_base_keeps_the_keys_the_pc_hol
 
 
 @respx.mock
+async def test_the_write_from_another_base_sends_the_pc_value_of_its_own_printer_keys(both):
+    put = _machine_pc(MACHINE_PC | {"inherits": "Older base"})
+    respx.put(f"{BASE}/preset").mock(return_value=httpx.Response(200, json={"selected": "Base"}))
+    respx.post(f"{BASE}/preset/save").mock(return_value=httpx.Response(200, json={"saved": "Queue"}))
+    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    row = (await srv.sync_presets("gestor_to_pc", ["Queue"], dry_run=False))["presets"][0]
+    assert row["written"] is True
+    sent = json.loads(put.calls.last.request.read())
+    assert sent["support_chamber_temp_control"] == "1" and "machine_start_gcode" not in sent
+
+
+@respx.mock
 async def test_a_printer_from_another_base_is_refused_when_a_protected_key_of_the_pc_would_be_lost(both):
     put = _machine_pc(MACHINE_PC | {"inherits": "Older base", "machine_start_gcode": "M191 S60\\nG90"})
     _gestor(MACHINE_FILE, MACHINE_ENTRY)
