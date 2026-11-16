@@ -482,6 +482,23 @@ def test_one_item_vectors_match_the_per_variant_vectors_of_orcaslicer_2_5():
     assert changes == {"filament_flow_ratio": "0.98", "pressure_advance": "0.025,0.025,0.025"}
 
 
+def test_filament_keys_outside_the_per_variant_set_keep_their_length_strict():
+    assert not ps.same_value("filament_colour", ["#FFFFFF", "#FFFFFF"], ["#FFFFFF"], per_variant=True)
+    assert not ps.same_value("filament_cost", "20,20,20", ["20"], per_variant=True)
+    assert ps.same_value("filament_cost", "20", ["20"], per_variant=True)
+    assert ps.fit_to_current("filament_cost", ["20"], ["20", "20", "20"], per_variant=True) == ["20"]
+    pc = PC | {"filament_cost": "20,20,20", "nozzle_temperature": "210,210,210"}
+    file = GESTOR_FILE | {"filament_cost": ["20"]}
+    assert "filament_cost" in {d.key for d in ps.compare(pc, file, PARENT, per_variant=True).differences}
+    assert ps.target_changes(file, pc, PARENT, per_variant=True)["filament_cost"] == "20"
+
+
+def test_the_per_variant_set_holds_only_vector_options_the_schema_knows():
+    vectors = ps._COMMA_VECTORS | {"coStrings"}
+    unknown = {key for key in ps._PER_VARIANT_KEYS if ps.option_type(key) not in vectors}
+    assert unknown == set()
+
+
 def test_printer_and_print_vectors_keep_their_length_strict():
     assert not ps.same_value("nozzle_diameter", "0.4,0.4", ["0.4"])
     assert ps.fit_to_current("nozzle_diameter", ["0.4"], ["0.4", "0.4"]) == ["0.4"]

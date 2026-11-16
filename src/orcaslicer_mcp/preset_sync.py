@@ -167,16 +167,48 @@ def _number_or_text(text: str):
 
 
 _VARIANT_KEY = "filament_extruder_variant"
+_PER_VARIANT_KEYS = frozenset({
+    "activate_air_filtration", "activate_air_filtration_during_print",
+    "activate_air_filtration_on_completion", "adaptive_pressure_advance",
+    "adaptive_pressure_advance_bridges", "adaptive_pressure_advance_model",
+    "adaptive_pressure_advance_overhangs", "additional_cooling_fan_speed",
+    "complete_print_exhaust_fan_speed", "during_print_exhaust_fan_speed",
+    "enable_pressure_advance", "fan_max_speed", "fan_min_speed",
+    "filament_adaptive_volumetric_speed", "filament_cooling_before_tower",
+    "filament_deretraction_speed", _VARIANT_KEY, "filament_flow_ratio",
+    "filament_flush_temp", "filament_flush_volumetric_speed", "filament_ironing_flow",
+    "filament_ironing_inset", "filament_ironing_spacing", "filament_ironing_speed",
+    "filament_long_retractions_when_cut", "filament_max_volumetric_speed",
+    "filament_minimal_purge_on_wipe_tower", "filament_multitool_ramming",
+    "filament_multitool_ramming_flow", "filament_multitool_ramming_volume",
+    "filament_pre_cooling_temperature", "filament_pre_cooling_temperature_nc",
+    "filament_preheat_temperature_delta", "filament_ramming_travel_time",
+    "filament_ramming_travel_time_nc", "filament_ramming_volumetric_speed",
+    "filament_ramming_volumetric_speed_nc", "filament_retract_after_wipe",
+    "filament_retract_before_wipe", "filament_retract_length_nc",
+    "filament_retract_length_toolchange", "filament_retract_lift_above",
+    "filament_retract_lift_below", "filament_retract_lift_enforce",
+    "filament_retract_restart_extra", "filament_retract_restart_extra_toolchange",
+    "filament_retract_when_changing_layer", "filament_retraction_distances_when_cut",
+    "filament_retraction_length", "filament_retraction_minimum_travel",
+    "filament_retraction_speed", "filament_wipe", "filament_wipe_distance", "filament_z_hop",
+    "filament_z_hop_types", "long_retractions_when_ec", "nozzle_temperature",
+    "nozzle_temperature_initial_layer", "nozzle_temperature_range_high",
+    "nozzle_temperature_range_low", "pressure_advance", "retraction_distances_when_ec",
+    "volumetric_speed_coefficients"})
 
 
 def same_value(key: str, a, b, per_variant: bool = False) -> bool:
-    """Equal as effective settings. OrcaSlicer 2.5 keeps a filament vector per extruder variant
-    where 2.4 kept one item, so one item matches a vector repeating it, and a one-item variant
-    list matches a variant list it starts."""
+    """Equal as effective settings. OrcaSlicer 2.5 keeps the filament vectors of
+    filament_options_with_variant (PrintConfig.cpp, _PER_VARIANT_KEYS here) per extruder variant
+    where 2.4 kept one item, so for those keys one item matches a vector repeating it, and a
+    one-item variant list matches a variant list it starts."""
     ca, cb = canonical(key, a), canonical(key, b)
     if ca == cb:
         return True
-    if not per_variant or not (isinstance(ca, tuple) and isinstance(cb, tuple)) or 1 not in (len(ca), len(cb)):
+    if not (per_variant and key in _PER_VARIANT_KEYS):
+        return False
+    if not (isinstance(ca, tuple) and isinstance(cb, tuple)) or 1 not in (len(ca), len(cb)):
         return False
     one, many = (ca, cb) if len(ca) == 1 else (cb, ca)
     if not many:
@@ -187,8 +219,9 @@ def same_value(key: str, a, b, per_variant: bool = False) -> bool:
 
 
 def fit_to_current(key: str, target, current, per_variant: bool = False):
-    """A one-item file vector written over a per-variant vector keeps the slicer's length."""
-    if (per_variant and key != _VARIANT_KEY and isinstance(target, list) and len(target) == 1
+    """A one-item file vector written over a per-variant vector keeps the slicer length."""
+    if (per_variant and key in _PER_VARIANT_KEYS and key != _VARIANT_KEY
+            and isinstance(target, list) and len(target) == 1
             and isinstance(current, list) and len(current) > 1):
         return target * len(current)
     return target
