@@ -1483,7 +1483,7 @@ async def list_objects() -> dict:
 
 
 _CALIBRATION_REPLACED = ("the calibration test created no objects and the previous project was already "
-                         "replaced; the MCP panel has a restore point")
+                         "replaced; look for its restore point in the OrcaSlicer MCP panel")
 
 
 def _calibration_err(e: ApiError) -> dict:
@@ -1492,10 +1492,15 @@ def _calibration_err(e: ApiError) -> dict:
     if body.get("error") != "not_created":
         return out
     replaced = body.get("project_replaced")
-    out["project_replaced"] = replaced if isinstance(replaced, bool) else True
-    if isinstance(body.get("detail"), str) and body["detail"].strip():
-        out["detail"] = body["detail"]
-    elif out["project_replaced"]:
+    detail = body.get("detail") if isinstance(body.get("detail"), str) else ""
+    if not isinstance(replaced, bool):
+        out["project_replaced"] = True
+        out["detail"] = "; ".join(t for t in (detail.strip(), _CALIBRATION_REPLACED) if t)
+        return out
+    out["project_replaced"] = replaced
+    if detail.strip():
+        out["detail"] = detail
+    elif replaced:
         out["detail"] = _CALIBRATION_REPLACED
     return out
 
@@ -1524,8 +1529,8 @@ async def create_calibration(
     commands) before send_to_queue. Refusals that change nothing: slicing, busy, job_running
     (try again later) and unsupported_on_belt (pa_line and pa_pattern do not exist for a belt
     printer; use pa_tower). not_created means the test added no objects; with
-    project_replaced true the previous project is already gone, so tell the user, who can
-    bring it back from the restore point in the OrcaSlicer MCP panel."""
+    project_replaced true the previous project is already gone, so tell the user to look
+    for its restore point in the OrcaSlicer MCP panel."""
     body: dict = {"type": type, "discard_unsaved": discard_unsaved}
     if type == "flow_rate":
         body |= {"pass": flow_pass, "linear": linear}

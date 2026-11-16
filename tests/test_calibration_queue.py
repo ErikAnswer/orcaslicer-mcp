@@ -77,6 +77,15 @@ async def test_not_created_from_an_older_build_counts_the_project_as_replaced():
 
 
 @respx.mock
+async def test_not_created_from_an_older_build_adds_the_replacement_to_its_detail():
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        422, json={"error": "not_created", "detail": "no objects"}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert out["project_replaced"] is True
+    assert out["detail"] == f"no objects; {srv._CALIBRATION_REPLACED}"
+
+
+@respx.mock
 async def test_not_created_replaced_without_detail_gets_the_restore_point_text():
     respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
         500, json={"error": "not_created", "project_replaced": True}))
