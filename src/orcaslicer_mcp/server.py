@@ -1511,36 +1511,79 @@ _CALIBRATION_EDITS_DETAIL = (
     "The test wrote these keys as unsaved edits of the active presets, as OrcaSlicer's Calibration menu does, "
     "and they stay after the test project is discarded (new_project keeps them). When the test is done, put them "
     "back with set_config {key: null} (filament keys with filament_slot), or the next slice keeps the test's values.")
+_CALIBRATION_OVERWRITTEN_DETAIL = (
+    " The keys under preset_edits_overwritten already held unsaved edits before the test and it changed them: "
+    "null would also throw away the earlier edit, so ask the user which value they want back.")
 _CALIBRATION_EDITS_UNCHECKED = (
     "get_status failed after the test was created, so which preset keys it left as unsaved edits is unknown; "
     "check get_status and put the test's edits back with set_config {key: null} when the test is done.")
+_CALIBRATION_BEFORE_UNKNOWN = (
+    "get_status failed before the test, so the keys under modified_presets are every unsaved edit now, and some "
+    "may be the user's own from before the test. When the test is done, ask the user before putting any of them "
+    "back with set_config {key: null} (filament keys with filament_slot).")
 
 
 async def _modified_keys(c) -> dict | None:
-    """The unsaved preset edits get_status lists, by group; None when it cannot be read."""
+    """The unsaved preset edits get_status lists, by group and by base key name; None when it cannot be read."""
     try:
         modified = (await c.get_status()).get("modified")
     except ApiError:
         return None
     if not isinstance(modified, dict):
         return None
-    return {g: _visible_keys(modified.get(g) if isinstance(modified.get(g), list) else [])
-            for g in _CALIBRATION_EDIT_GROUPS}
+    out = {}
+    for g in _CALIBRATION_EDIT_GROUPS:
+        raw = modified.get(g) if isinstance(modified.get(g), list) else []
+        out[g] = list(dict.fromkeys(k.split("#", 1)[0] for k in _visible_keys(raw) if isinstance(k, str)))
+    return out
 
 
-def _add_preset_edits(out: dict, before: dict | None, after: dict | None) -> None:
-    if after is None:
+async def _config_values(c, modified: dict | None) -> dict | None:
+    keys = [k for g in _CALIBRATION_EDIT_GROUPS for k in (modified or {}).get(g) or []]
+    if not keys:
+        return {}
+    try:
+        return await c.get_config(keys)
+    except ApiError:
+        return None
+
+
+async def _calibration_snapshot(c) -> tuple[dict | None, dict | None]:
+    modified = await _modified_keys(c)
+    return modified, await _config_values(c, modified)
+
+
+def _non_empty(groups: dict) -> dict:
+    return {g: keys for g, keys in groups.items() if keys}
+
+
+def _add_preset_edits(out: dict, before: tuple[dict | None, dict | None],
+                      after: tuple[dict | None, dict | None]) -> None:
+    before_keys, before_values = before
+    after_keys, after_values = after
+    if after_keys is None:
         out["preset_edits_detail"] = _CALIBRATION_EDITS_UNCHECKED
         return
-    edits = {}
+    if before_keys is None:
+        modified = _non_empty(after_keys)
+        if modified:
+            out["modified_presets"] = modified
+            out["preset_edits_detail"] = _CALIBRATION_BEFORE_UNKNOWN
+        return
+    edits, overwritten = {}, {}
     for group in _CALIBRATION_EDIT_GROUPS:
-        earlier = set((before or {}).get(group) or [])
-        new = [k for k in after.get(group) or [] if k not in earlier]
-        if new:
-            edits[group] = new
+        earlier = set(before_keys.get(group) or [])
+        edits[group] = [k for k in after_keys.get(group) or [] if k not in earlier]
+        overwritten[group] = [k for k in after_keys.get(group) or [] if k in earlier
+                              and before_values is not None and after_values is not None
+                              and before_values.get(k) != after_values.get(k)]
+    edits, overwritten = _non_empty(edits), _non_empty(overwritten)
     if edits:
         out["preset_edits"] = edits
-        out["preset_edits_detail"] = _CALIBRATION_EDITS_DETAIL
+    if overwritten:
+        out["preset_edits_overwritten"] = overwritten
+    if edits or overwritten:
+        out["preset_edits_detail"] = _CALIBRATION_EDITS_DETAIL + (_CALIBRATION_OVERWRITTEN_DETAIL if overwritten else "")
 
 
 @mcp.tool()
@@ -1575,7 +1618,9 @@ async def create_calibration(
     presets, and they outlive the test project: new_project keeps them (kept_changes).
     `preset_edits` lists the keys this call left modified, {print: [...], filament: [...]};
     when the test is done, put them back with set_config {key: null} (filament keys with
-    filament_slot) or the user's next slice keeps the test's values."""
+    filament_slot) or the user's next slice keeps the test's values. Keys that already held
+    an unsaved edit and that the test changed come under `preset_edits_overwritten`: null
+    would lose that earlier edit too, so ask the user. Only a created test reports them."""
     body: dict = {"type": type, "discard_unsaved": discard_unsaved}
     if type == "flow_rate":
         body |= {"pass": flow_pass, "linear": linear}
@@ -1583,7 +1628,7 @@ async def create_calibration(
         body |= {"start": start, "end": end, "step": step}
     try:
         async with _client() as c:
-            before = await _modified_keys(c)
+            before = await _calibration_snapshot(c)
             out = await c.create_calibration(body)
             if tool is not None:
                 assigned = []
@@ -1592,7 +1637,7 @@ async def create_calibration(
                     assigned.append(obj["id"])
                 out["tool"] = tool
                 out["assigned_objects"] = assigned
-            _add_preset_edits(out, before, await _modified_keys(c))
+            _add_preset_edits(out, before, await _calibration_snapshot(c))
             return out
     except ApiError as e:
         return _calibration_err(e)

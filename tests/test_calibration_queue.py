@@ -133,13 +133,46 @@ async def test_busy_refusals_are_reported_as_they_come(error):
 async def test_calibration_lists_the_preset_edits_it_left():
     _status({"print": ["layer_height"], "printer": ["extruder_nozzle_stats"]},
             {"print": ["layer_height", "inner_wall_speed", "outer_wall_speed"],
-             "filament": ["slow_down_layer_time"], "printer": ["extruder_nozzle_stats"]})
+             "filament": ["slow_down_layer_time#0", "slow_down_layer_time#1"],
+             "printer": ["extruder_nozzle_stats"]})
+    respx.get(f"{BASE}/config").mock(return_value=httpx.Response(200, json={"config": {"layer_height": "0.2"}}))
     respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
         200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
     out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
     assert out["preset_edits"] == {"print": ["inner_wall_speed", "outer_wall_speed"],
                                    "filament": ["slow_down_layer_time"]}
     assert out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL
+    assert "preset_edits_overwritten" not in out
+
+
+@respx.mock
+async def test_calibration_reports_earlier_edits_it_overwrote():
+    _status({"print": ["outer_wall_speed", "layer_height"]},
+            {"print": ["outer_wall_speed", "layer_height", "inner_wall_speed"]})
+    respx.get(f"{BASE}/config").mock(side_effect=[
+        httpx.Response(200, json={"config": {"outer_wall_speed": "120", "layer_height": "0.2"}}),
+        httpx.Response(200, json={"config": {"outer_wall_speed": "200", "layer_height": "0.2",
+                                             "inner_wall_speed": "200"}})])
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert out["preset_edits"] == {"print": ["inner_wall_speed"]}
+    assert out["preset_edits_overwritten"] == {"print": ["outer_wall_speed"]}
+    assert out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_OVERWRITTEN_DETAIL
+
+
+@respx.mock
+async def test_calibration_does_not_claim_edits_when_the_earlier_status_failed():
+    respx.get(f"{BASE}/status").mock(side_effect=[
+        httpx.Response(500, json={"error": "boom"}),
+        httpx.Response(200, json={"modified": {"print": ["layer_height", "inner_wall_speed"], "filament": []}})])
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    respx.get(f"{BASE}/config").mock(return_value=httpx.Response(200, json={"config": {}}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert "preset_edits" not in out
+    assert out["modified_presets"] == {"print": ["layer_height", "inner_wall_speed"]}
+    assert out["preset_edits_detail"] == srv._CALIBRATION_BEFORE_UNKNOWN
 
 
 @respx.mock
