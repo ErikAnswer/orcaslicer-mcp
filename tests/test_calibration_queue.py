@@ -171,7 +171,56 @@ async def test_calibration_flags_earlier_edits_as_maybe_overwritten_when_config_
     out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
     assert out["preset_edits"] == {"print": ["inner_wall_speed"]}
     assert out["preset_edits_overwritten"] == {"print": ["outer_wall_speed"], "filament": ["slow_down_layer_time"]}
+    assert out["preset_edits_detail"] == (srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_MAYBE_OVERWRITTEN_DETAIL
+                                          + srv._CALIBRATION_FILAMENT_WHOLE_VALUE)
+
+
+@respx.mock
+async def test_calibration_reads_values_after_only_for_keys_edited_before():
+    _status({"print": ["layer_height"]}, {"print": ["inner_wall_speed"]})
+    config = respx.get(f"{BASE}/config").mock(return_value=httpx.Response(200, json={"config": {"layer_height": "0.2"}}))
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert config.call_count == 1
+    assert out["preset_edits"] == {"print": ["inner_wall_speed"]}
+
+
+@respx.mock
+async def test_calibration_reads_no_values_without_earlier_edits():
+    _status({}, {"print": ["inner_wall_speed"]})
+    config = respx.get(f"{BASE}/config").mock(return_value=httpx.Response(200, json={"config": {}}))
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert config.call_count == 0
+    assert out["preset_edits"] == {"print": ["inner_wall_speed"]}
+
+
+@respx.mock
+async def test_calibration_skips_the_later_read_when_the_earlier_one_failed():
+    _status({"print": ["outer_wall_speed"]}, {"print": ["outer_wall_speed"]})
+    config = respx.get(f"{BASE}/config").mock(return_value=httpx.Response(500, json={"error": "boom"}))
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert config.call_count == 1
+    assert out["preset_edits_overwritten"] == {"print": ["outer_wall_speed"]}
     assert out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_MAYBE_OVERWRITTEN_DETAIL
+
+
+@respx.mock
+async def test_calibration_says_overwritten_filament_keys_are_compared_across_slots():
+    _status({"filament": ["slow_down_layer_time#0"]}, {"filament": ["slow_down_layer_time#0"]})
+    respx.get(f"{BASE}/config").mock(side_effect=[
+        httpx.Response(200, json={"config": {"slow_down_layer_time": "8,8"}}),
+        httpx.Response(200, json={"config": {"slow_down_layer_time": "1,8"}})])
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert out["preset_edits_overwritten"] == {"filament": ["slow_down_layer_time"]}
+    assert out["preset_edits_detail"] == (srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_OVERWRITTEN_DETAIL
+                                          + srv._CALIBRATION_FILAMENT_WHOLE_VALUE)
 
 
 @respx.mock
