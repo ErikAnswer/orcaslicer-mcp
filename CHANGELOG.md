@@ -8,6 +8,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Fixed
+- `set_config` with a key set to `null` checks afterwards that the unsaved edit is gone: a key OrcaSlicer still lists as modified comes back under `not_reverted` with a `detail`, instead of `reverted`. OrcaSlicer MCP builds up to `erik-v2.5.0-mcp.17` report the edited value of the selected preset as its saved one, so there the edit stayed.
 - `send_to_queue` no longer confirms a new job with an id when a pending job without an id appeared in the same reading, or one without an id and without a creation date is pending: it returns `queue_confirmed: false` with the job under `candidates` and, with `hold`, holds nothing.
 
 ### Removed

@@ -900,6 +900,20 @@ async def _resolve_reverts(c, changes: dict, slot: int | None = None) -> tuple[d
     return out, reverted, unchanged, errors
 
 
+_NOT_REVERTED_DETAIL = (
+    "The keys under not_reverted still hold their unsaved edit: this OrcaSlicer build reports the edited value "
+    "as the saved one (fixed in the OrcaSlicer MCP builds after erik-v2.5.0-mcp.17). Until it is updated, set "
+    "the value you want instead of null; get_preset_config of the selected preset shows the edited values too.")
+
+
+async def _still_modified(c, keys: list) -> list:
+    """The keys that get_status still lists as unsaved edits, in the order given."""
+    modified = (await c.get_status()).get("modified") or {}
+    listed = {k.split("#", 1)[0] for group in modified.values() if isinstance(group, list)
+              for k in group if isinstance(k, str)}
+    return [k for k in keys if k in listed]
+
+
 async def _put_config_with_reverts(c, changes: dict, slot: int | None = None) -> dict:
     resolved, reverted, unchanged, errors = await _resolve_reverts(c, changes, slot)
     if errors:
@@ -910,6 +924,12 @@ async def _put_config_with_reverts(c, changes: dict, slot: int | None = None) ->
         result = {"applied": [], "errors": {}}
         if slot is not None:
             result["slot"] = slot + 1
+    if reverted and slot is None and not result.get("errors"):
+        stuck = await _still_modified(c, reverted)
+        if stuck:
+            reverted = [k for k in reverted if k not in stuck]
+            result["not_reverted"] = stuck
+            result["detail"] = _NOT_REVERTED_DETAIL
     if reverted:
         result["reverted"] = reverted
     if unchanged:
@@ -939,7 +959,8 @@ async def set_config(
 
     Returns {applied, errors}; if any key is invalid the whole batch is rejected and nothing
     changes. Keys set to null are listed under `reverted` (or `already_saved` when they had no
-    unsaved edit).
+    unsaved edit); a key that still shows as modified afterwards comes under `not_reverted`
+    with a `detail` saying why.
 
     With filament_slot the per-filament keys land in that slot's preset: OrcaSlicer binds the
     Filament tab to the slot first, as the slot's edit button does, and the reply names the
