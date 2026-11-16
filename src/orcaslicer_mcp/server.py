@@ -3112,11 +3112,16 @@ def _write_pc_backup(ptype: str, name: str, stored: dict) -> str:
     return str(path)
 
 
+class _FilamentTabNotRestored(Exception):
+    def __init__(self, wanted: str, restored: list, detail: str):
+        super().__init__(detail)
+        self.wanted = wanted
+        self.restored = restored
+        self.detail = detail
+
+
 async def _filament_tab(c) -> str | None:
-    try:
-        return ((await c.get_filaments()).get("tab") or {}).get("preset")
-    except ApiError:
-        return None
+    return ((await c.get_filaments()).get("tab") or {}).get("preset")
 
 
 async def _restore_selection(c, before: dict, filament_tab: str | None = None) -> list:
@@ -3136,9 +3141,17 @@ async def _restore_selection(c, before: dict, filament_tab: str | None = None) -
             if slot < len(now) and now[slot] != name:
                 await c.select_preset("filament", name, slot=slot)
                 restored.append({"type": "filament", "name": name, "slot": slot})
-    if filament_tab and await _filament_tab(c) != filament_tab:
-        await c.select_preset("filament", filament_tab)
-        restored.append({"type": "filament", "name": filament_tab, "tab": True})
+    if filament_tab:
+        try:
+            current = await _filament_tab(c)
+        except ApiError:
+            current = None
+        if current != filament_tab:
+            try:
+                await c.select_preset("filament", filament_tab)
+            except ApiError as e:
+                raise _FilamentTabNotRestored(filament_tab, restored, str(e)) from e
+            restored.append({"type": "filament", "name": filament_tab, "tab": True})
     return restored
 
 
@@ -3237,7 +3250,14 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
     if unsaved:
         return row | {"error": "unsaved_changes", "modified": unsaved,
                       "hint": "save or discard the edits in OrcaSlicer first; selecting a preset would lose them"}
-    tab = await _filament_tab(c) if ptype == "filament" else None
+    tab, tab_warning = None, None
+    if ptype == "filament":
+        try:
+            tab = await _filament_tab(c)
+        except ApiError as e:
+            tab_warning = {"restored": False, "reason": "not_read", "detail": str(e),
+                           "hint": "the preset shown on the Filament tab could not be read before the write, "
+                                   "so it was not put back; check the Filament tab in OrcaSlicer"}
     if stored:
         try:
             row["backup"] = _write_pc_backup(ptype, name, stored)
@@ -3246,8 +3266,14 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
     failure = await _apply_and_save(c, ptype, name, start_name, start, changes)
     try:
         row["reselected"] = await _restore_selection(c, status.get("presets") or {}, tab)
+    except _FilamentTabNotRestored as e:
+        row["reselected"] = e.restored
+        tab_warning = {"restored": False, "reason": "not_selected", "wanted": e.wanted, "detail": e.detail,
+                       "hint": "the Filament tab could not be put back to this preset; select it in OrcaSlicer"}
     except ApiError as e:
         row["reselect_error"] = str(e)
+    if tab_warning:
+        row["filament_tab"] = tab_warning
     if failure:
         return row | failure
     after = _psync.compare((await c.get_preset_config(ptype, name)).get("config", {}), gestor_file, parent,
@@ -3282,7 +3308,8 @@ async def sync_presets(
     where it can be restored (and restores it if the upload fails); that direction changes
     nothing in the PC. gestor_to_pc selects the file's parent preset in the PC (or the PC's own
     copy when it has the same parent), applies the file's settings and saves it under its name,
-    then selects again what was selected before. It refuses while any preset group has unsaved
+    then selects again what was selected before; a row with filament_tab (restored false) means
+    the Filament tab could not be read or put back and may show another preset. It refuses while any preset group has unsaved
     edits in the PC (selecting would discard them), saves a JSON copy of the PC's previous
     version in ~/.cache/orcaslicer-mcp/preset-backups/ first, and reports instead of writing the
     protected keys (custom G-code, scripts, printer connection), writing nothing when they are

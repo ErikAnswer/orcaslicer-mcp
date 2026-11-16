@@ -40,6 +40,9 @@ class FakeOrca:
         self.select_error: str | None = None
         self.select_error_when_clean = False
         self.put_failures_after: int | None = None
+        self.filaments_failures: set = set()
+        self.filaments_reads = 0
+        self.tab_select_error_for: str | None = None
         self.writes: list = []
 
     def install(self):
@@ -52,9 +55,7 @@ class FakeOrca:
                         "filaments": list(self.selected["filament"])},
             "modified": {"print": [], "printer": [], "filament": self._edited_keys()} | self.modified}))
         respx.put(f"{BASE}/preset").mock(side_effect=self._select)
-        respx.get(f"{BASE}/filaments").mock(side_effect=lambda r: httpx.Response(200, json={
-            "filaments": [{"index": i, "preset": n} for i, n in enumerate(self.selected["filament"])],
-            "tab": {"preset": self.tab, "slot": None}}))
+        respx.get(f"{BASE}/filaments").mock(side_effect=self._filaments)
         respx.put(f"{BASE}/config").mock(side_effect=self._put)
         respx.post(f"{BASE}/preset/save").mock(side_effect=self._save)
 
@@ -69,9 +70,19 @@ class FakeOrca:
         return httpx.Response(200, json={"name": name, "system": name.endswith("@System"),
                                          "config": self.presets[name]})
 
+    def _filaments(self, request):
+        self.filaments_reads += 1
+        if self.filaments_reads in self.filaments_failures:
+            return httpx.Response(500, json={"error": "internal"})
+        return httpx.Response(200, json={
+            "filaments": [{"index": i, "preset": n} for i, n in enumerate(self.selected["filament"])],
+            "tab": {"preset": self.tab, "slot": None}})
+
     def _select(self, request):
         body = json.loads(request.read())
         self.writes.append(("select", body))
+        if "slot" not in body and body["name"] == self.tab_select_error_for:
+            return httpx.Response(500, json={"error": "internal"})
         after_put = any(w[0] == "put" for w in self.writes) and self.select_error_when_clean
         if (self._edited_keys() or after_put) and self.select_error:
             return httpx.Response(500, json={"error": self.select_error})
@@ -528,3 +539,73 @@ async def test_the_filament_tab_goes_back_and_the_sidebar_slots_stay(both):
     assert row["verified"] is True
     assert pc.selected["filament"] == ["Slot 1", "Slot 2", NAME, "Slot 4"] and pc.tab == "Slot 2"
     assert row["reselected"] == [{"type": "filament", "name": "Slot 2", "tab": True}]
+
+
+def _four_slots_with_another_preset_on_the_tab() -> FakeOrca:
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected="Slot 1")
+    pc.selected["filament"] = ["Slot 1", "Slot 2", NAME, "Slot 4"]
+    pc.tab = "Slot 2"
+    pc.install()
+    _gestor()
+    return pc
+
+
+@respx.mock
+async def test_a_filament_tab_that_cannot_be_read_before_the_write_is_reported(both):
+    pc = _four_slots_with_another_preset_on_the_tab()
+    pc.filaments_failures = {1}
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["written"] is True and row["verified"] is True
+    assert row["reselected"] == [] and pc.tab == NAME
+    assert row["filament_tab"]["restored"] is False and row["filament_tab"]["reason"] == "not_read"
+    assert row["filament_tab"]["detail"] and "Filament tab" in row["filament_tab"]["hint"]
+    assert pc.selected["filament"] == ["Slot 1", "Slot 2", NAME, "Slot 4"]
+
+
+@respx.mock
+async def test_a_filament_tab_that_cannot_be_selected_again_is_reported(both):
+    pc = _four_slots_with_another_preset_on_the_tab()
+    pc.tab_select_error_for = "Slot 2"
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["written"] is True and row["verified"] is True
+    assert row["reselected"] == [] and "reselect_error" not in row and pc.tab == NAME
+    assert row["filament_tab"] == {"restored": False, "reason": "not_selected", "wanted": "Slot 2",
+                                   "detail": row["filament_tab"]["detail"],
+                                   "hint": row["filament_tab"]["hint"]}
+    assert row["filament_tab"]["detail"] and "Slot 2" not in row["filament_tab"]["hint"]
+
+
+@respx.mock
+async def test_a_failed_write_still_reports_the_filament_tab_it_could_not_put_back(both):
+    pc = _four_slots_with_another_preset_on_the_tab()
+    pc.put_errors = {"pressure_advance": "out of range"}
+    pc.tab_select_error_for = "Slot 2"
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "invalid_keys"
+    assert row["filament_tab"]["reason"] == "not_selected" and row["filament_tab"]["wanted"] == "Slot 2"
+
+
+@respx.mock
+async def test_the_filament_tab_is_selected_again_when_it_cannot_be_read_after_the_write(both):
+    pc = _four_slots_with_another_preset_on_the_tab()
+    pc.filaments_failures = {2}
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["verified"] is True and "filament_tab" not in row and pc.tab == "Slot 2"
+    assert row["reselected"] == [{"type": "filament", "name": "Slot 2", "tab": True}]
+
+
+async def test_restore_selection_keeps_what_it_restored_when_the_tab_fails():
+    class TabFails(SelectionClient):
+        async def get_filaments(self):
+            return {"tab": {"preset": "Other"}}
+
+        async def select_preset(self, ptype, name, slot=None):
+            if ptype == "filament" and slot is None:
+                raise srv.ApiError("internal")
+            await super().select_preset(ptype, name, slot)
+
+    c = TabFails({"printer": "q", "print": "p", "filament": ["A", "Z"]})
+    with pytest.raises(srv._FilamentTabNotRestored) as caught:
+        await srv._restore_selection(c, {"printer": "q", "print": "p", "filament": ["A", "B"]}, "Tab preset")
+    assert caught.value.wanted == "Tab preset"
+    assert caught.value.restored == [{"type": "filament", "name": "B", "slot": 1}]
