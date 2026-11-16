@@ -151,6 +151,18 @@ def test_preset_config_redacts_credentials(plugin):
     assert call(plugin, "POST", "/api/v1/preset/config", {"type": "bogus", "name": "x"})[0] == 400
 
 
+def test_preset_config_of_the_selected_preset_is_the_saved_one(plugin):
+    _, st = call(plugin, "GET", "/api/v1/status")
+    name = st["presets"]["print"]
+    _, before = call(plugin, "POST", "/api/v1/preset/config", {"type": "print", "name": name})
+    saved = before["config"]["layer_height"]
+    assert call(plugin, "PUT", "/api/v1/config", {"layer_height": 0.28})[0] == 200
+    _, live = call(plugin, "GET", "/api/v1/config?keys=layer_height")
+    assert live["config"]["layer_height"] != saved
+    _, after = call(plugin, "POST", "/api/v1/preset/config", {"type": "print", "name": name})
+    assert after["config"]["layer_height"] == saved
+
+
 def test_select_preset(plugin):
     status, body = call(plugin, "PUT", "/api/v1/preset", {"type": "print", "name": "My Fast"})
     assert status == 200 and body["selected"] == "My Fast"
