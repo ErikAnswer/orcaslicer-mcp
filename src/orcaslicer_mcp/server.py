@@ -900,6 +900,27 @@ async def _resolve_reverts(c, changes: dict, slot: int | None = None) -> tuple[d
     return out, reverted, unchanged, errors
 
 
+_NOT_REVERTED_DETAIL = (
+    "The keys under not_reverted still show as unsaved edits after being put back. Likely cause: OrcaSlicer MCP "
+    "builds up to erik-v2.5.0-mcp.17, and older versions of the plugin, report the edited value of the selected "
+    "preset as its saved one, so the same value was written again (get_preset_config shows it too). Set the "
+    "value you want instead of null; updating OrcaSlicer or the plugin is what fixes that cause.")
+
+
+_REVERT_UNCHECKED_DETAIL = (
+    "The changes were written, but get_status failed right after, so whether the reverted keys lost their "
+    "unsaved edit is unconfirmed; get_status lists what is still modified.")
+_REVERT_REPLY_KEYS = ("reverted", "already_saved", "not_reverted", "detail")
+
+
+async def _still_modified(c, keys: list) -> list:
+    """The keys that get_status still lists as unsaved edits, in the order given."""
+    modified = (await c.get_status()).get("modified") or {}
+    listed = {k.split("#", 1)[0] for group in modified.values() if isinstance(group, list)
+              for k in group if isinstance(k, str)}
+    return [k for k in keys if k in listed]
+
+
 async def _put_config_with_reverts(c, changes: dict, slot: int | None = None) -> dict:
     resolved, reverted, unchanged, errors = await _resolve_reverts(c, changes, slot)
     if errors:
@@ -910,6 +931,16 @@ async def _put_config_with_reverts(c, changes: dict, slot: int | None = None) ->
         result = {"applied": [], "errors": {}}
         if slot is not None:
             result["slot"] = slot + 1
+    if reverted and slot is None and not result.get("errors"):
+        try:
+            stuck = await _still_modified(c, reverted)
+        except ApiError:  # the write went through; only the confirmation is missing
+            stuck = []
+            result["detail"] = _REVERT_UNCHECKED_DETAIL
+        if stuck:
+            reverted = [k for k in reverted if k not in stuck]
+            result["not_reverted"] = stuck
+            result["detail"] = _NOT_REVERTED_DETAIL
     if reverted:
         result["reverted"] = reverted
     if unchanged:
@@ -939,7 +970,8 @@ async def set_config(
 
     Returns {applied, errors}; if any key is invalid the whole batch is rejected and nothing
     changes. Keys set to null are listed under `reverted` (or `already_saved` when they had no
-    unsaved edit).
+    unsaved edit); a key that still shows as modified afterwards comes under `not_reverted`
+    with a `detail` saying why.
 
     With filament_slot the per-filament keys land in that slot's preset: OrcaSlicer binds the
     Filament tab to the slot first, as the slot's edit button does, and the reply names the
@@ -1156,16 +1188,17 @@ async def apply_and_slice(
             applied = await _put_config_with_reverts(c, changes)
             if applied.get("errors") and not applied.get("applied"):
                 return {"applied": [], "errors": applied["errors"], "result": None}
+            reverts = {k: applied[k] for k in _REVERT_REPLY_KEYS if k in applied}
             try:
                 started = await _start_slice(c)
             except Validation as e:
                 return {"applied": applied.get("applied", []),
-                        "errors": applied.get("errors", {}), "result": await _slice_err(c, e)}
+                        "errors": applied.get("errors", {}), "result": await _slice_err(c, e), **reverts}
             if not started.get("already_valid"):
                 await _wait_for_slice(c, 300)
             result = summarize_slice(await c.slice_status())
             return {"applied": applied.get("applied", []),
-                    "errors": applied.get("errors", {}), "result": result}
+                    "errors": applied.get("errors", {}), "result": result, **reverts}
     except ApiError as e:
         return _err(e)
 
@@ -2742,9 +2775,11 @@ async def set_height_range(
 
 @mcp.tool()
 async def get_preset_config(type: str, name: str) -> dict:
-    """Read every setting of a named preset without selecting it; get_config reads the live settings.
+    """Read every setting of a named preset as saved, without selecting it; get_config reads the live settings.
 
-    type = print|filament|printer.
+    type = print|filament|printer. Unsaved edits are not included, except on OrcaSlicer MCP builds up to
+    erik-v2.5.0-mcp.17 and older plugin versions, where the selected preset comes back with its unsaved
+    edits (get_status lists them under `modified`).
     """
     try:
         async with _client() as c:

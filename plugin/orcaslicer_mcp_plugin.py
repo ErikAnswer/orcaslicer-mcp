@@ -636,7 +636,9 @@ def read_preset_config(ptype: str, name: str) -> dict:
     p = c.find_preset(name)
     if p is None:
         raise ApiReply(404, {"error": "unknown_preset"})
-    cfg = {k: redact_value(k, p.config_value(k)) for k in p.config_keys()}
+    # The selected preset is found as its edited copy; a caller wants what is saved (set_config with null).
+    saved = c.selected_preset() if p.name == c.selected_preset_name() else p
+    cfg = {k: redact_value(k, saved.config_value(k)) for k in saved.config_keys()}
     return {"name": p.name, "system": bool(p.is_system), "config": cfg}
 
 

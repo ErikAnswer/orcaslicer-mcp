@@ -115,10 +115,15 @@ def _status(modified, filaments=("PLA Basic",)):
             "modified": modified}
 
 
+def _status_then_clean(modified, filaments=("PLA Basic",)):
+    return [httpx.Response(200, json=_status(modified, filaments)),
+            httpx.Response(200, json=_status({"print": [], "filament": [], "printer": []}, filaments))]
+
+
 @respx.mock
 async def test_null_reverts_a_print_key_to_the_saved_value():
-    respx.get(f"{BASE}/api/v1/status").mock(return_value=httpx.Response(200, json=_status(
-        {"print": ["wall_loops"], "filament": [], "printer": []})))
+    respx.get(f"{BASE}/api/v1/status").mock(side_effect=_status_then_clean(
+        {"print": ["wall_loops"], "filament": [], "printer": []}))
     preset = respx.post(f"{BASE}/api/v1/preset/config").mock(return_value=httpx.Response(200, json={
         "config": {"wall_loops": "2", "layer_height": "0.2"}}))
     respx.get(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={"config": {"wall_loops": "5"}}))
@@ -127,7 +132,82 @@ async def test_null_reverts_a_print_key_to_the_saved_value():
     out = await srv.set_config({"wall_loops": None, "sparse_infill_density": "20%"})
     assert json.loads(preset.calls[0].request.content) == {"type": "print", "name": "0.20mm Standard"}
     assert json.loads(put.calls[0].request.content) == {"wall_loops": "2", "sparse_infill_density": "20%"}
-    assert out["reverted"] == ["wall_loops"]
+    assert out["reverted"] == ["wall_loops"] and "not_reverted" not in out
+
+
+@respx.mock
+async def test_null_that_leaves_the_key_modified_is_reported_as_not_reverted():
+    respx.get(f"{BASE}/api/v1/status").mock(side_effect=[
+        httpx.Response(200, json=_status({"print": ["layer_height", "wall_loops"], "filament": [], "printer": []})),
+        httpx.Response(200, json=_status({"print": ["layer_height"], "filament": [], "printer": []}))])
+    respx.post(f"{BASE}/api/v1/preset/config").mock(return_value=httpx.Response(200, json={
+        "config": {"layer_height": "0.16", "wall_loops": "2"}}))
+    respx.get(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={
+        "config": {"layer_height": "0.16", "wall_loops": "5"}}))
+    respx.put(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={
+        "applied": ["layer_height", "wall_loops"], "errors": {}}))
+    out = await srv.set_config({"layer_height": None, "wall_loops": None})
+    assert out["not_reverted"] == ["layer_height"] and out["reverted"] == ["wall_loops"]
+    assert "Set the value you want" in out["detail"]
+
+
+@respx.mock
+async def test_null_whose_check_fails_keeps_the_write_and_says_it_is_unconfirmed():
+    respx.get(f"{BASE}/api/v1/status").mock(side_effect=[
+        httpx.Response(200, json=_status({"print": ["wall_loops"], "filament": [], "printer": []})),
+        httpx.Response(500, json={"error": "busy"})])
+    respx.post(f"{BASE}/api/v1/preset/config").mock(return_value=httpx.Response(200, json={
+        "config": {"wall_loops": "2"}}))
+    respx.get(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={"config": {"wall_loops": "5"}}))
+    respx.put(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={
+        "applied": ["wall_loops"], "errors": {}}))
+    out = await srv.set_config({"wall_loops": None})
+    assert out["applied"] == ["wall_loops"] and out["reverted"] == ["wall_loops"]
+    assert "unconfirmed" in out["detail"] and "error" not in out
+
+
+@respx.mock
+async def test_apply_and_slice_passes_on_a_null_that_was_not_reverted(monkeypatch):
+    respx.get(f"{BASE}/api/v1/status").mock(return_value=httpx.Response(200, json=_status(
+        {"print": ["layer_height"], "filament": [], "printer": []})))
+    respx.post(f"{BASE}/api/v1/preset/config").mock(return_value=httpx.Response(200, json={
+        "config": {"layer_height": "0.16"}}))
+    respx.get(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={"config": {"layer_height": "0.16"}}))
+    respx.put(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={
+        "applied": ["layer_height"], "errors": {}}))
+    respx.post(f"{BASE}/api/v1/slice").mock(return_value=httpx.Response(200, json={
+        "already_valid": True, "started": False}))
+    respx.get(f"{BASE}/api/v1/slice/status").mock(return_value=httpx.Response(200, json={
+        "state": "done", "percent": 100, "message": "", "stats": {"total_cost": 0.1}, "warnings": []}))
+    out = await srv.apply_and_slice({"layer_height": None})
+    assert out["not_reverted"] == ["layer_height"] and "reverted" not in out
+    assert "Set the value you want" in out["detail"] and out["result"]["state"] == "done"
+
+
+@respx.mock
+async def test_null_on_a_filament_key_still_listed_with_its_slot_suffix_is_not_reverted():
+    respx.get(f"{BASE}/api/v1/status").mock(return_value=httpx.Response(200, json=_status(
+        {"print": [], "filament": ["nozzle_temperature#1"], "printer": []})))
+    respx.post(f"{BASE}/api/v1/preset/config").mock(return_value=httpx.Response(200, json={
+        "config": {"nozzle_temperature": "230"}}))
+    respx.get(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={"config": {}}))
+    respx.put(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={
+        "applied": ["nozzle_temperature"], "errors": {}}))
+    out = await srv.set_config({"nozzle_temperature": None})
+    assert out["not_reverted"] == ["nozzle_temperature"] and "reverted" not in out
+
+
+@respx.mock
+async def test_a_refused_batch_with_a_null_is_not_checked_again():
+    status = respx.get(f"{BASE}/api/v1/status").mock(return_value=httpx.Response(200, json=_status(
+        {"print": ["wall_loops"], "filament": [], "printer": []})))
+    respx.post(f"{BASE}/api/v1/preset/config").mock(return_value=httpx.Response(200, json={
+        "config": {"wall_loops": "2"}}))
+    respx.get(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={"config": {"wall_loops": "5"}}))
+    respx.put(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={
+        "applied": [], "errors": {"sparse_infill_density": "out_of_range: too high"}}))
+    out = await srv.set_config({"wall_loops": None, "sparse_infill_density": "900%"})
+    assert status.call_count == 1 and "not_reverted" not in out
 
 
 @respx.mock
@@ -155,8 +235,8 @@ async def test_null_on_a_filament_key_with_several_filaments_is_refused_whole():
 
 @respx.mock
 async def test_null_on_a_filament_key_with_one_filament_uses_that_preset():
-    respx.get(f"{BASE}/api/v1/status").mock(return_value=httpx.Response(200, json=_status(
-        {"print": [], "filament": ["nozzle_temperature"], "printer": []}, filaments=("PLA Basic", "PLA Basic"))))
+    respx.get(f"{BASE}/api/v1/status").mock(side_effect=_status_then_clean(
+        {"print": [], "filament": ["nozzle_temperature"], "printer": []}, filaments=("PLA Basic", "PLA Basic")))
     preset = respx.post(f"{BASE}/api/v1/preset/config").mock(return_value=httpx.Response(200, json={
         "config": {"nozzle_temperature": "215"}}))
     respx.get(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={"config": {}}))

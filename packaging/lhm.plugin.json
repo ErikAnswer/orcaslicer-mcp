@@ -275,7 +275,7 @@
     },
     {
       "name": "get_preset_config",
-      "description": "Read every setting of a named preset without selecting it; get_config reads the live settings."
+      "description": "Read every setting of a named preset as saved, without selecting it; get_config reads the live settings."
     },
     {
       "name": "delete_preset",
