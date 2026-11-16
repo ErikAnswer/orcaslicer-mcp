@@ -3165,10 +3165,8 @@ async def _apply_and_save(c, ptype: str, name: str, start_name: str, start: dict
     if put:
         try:
             await c.restore_config({k: start[k] for k in changes if k in start})
-            left = _unsaved_in(await c.get_status(), ptype, start_name)
-            if left:
-                await c.select_preset(ptype, start_name)
-                left = _unsaved_in(await c.get_status(), ptype, start_name)
+            await c.select_preset(ptype, start_name)
+            left = _visible_keys(((await c.get_status()).get("modified") or {}).get(ptype))
         except ApiError as e:
             return failure | {"edits_discarded": False, "discard_error": str(e),
                               "hint": "discard the unsaved edits of this preset in OrcaSlicer"}

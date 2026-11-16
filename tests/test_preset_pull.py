@@ -301,7 +301,8 @@ async def test_a_failed_save_on_the_selected_preset_discards_the_half_applied_ed
     row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
     assert row["error"] == "write_failed" and row["edits_discarded"] is True
     assert row["reselected"] == []
-    assert pc.writes[-1] == ("put", {"filament_flow_ratio": "0.95", "pressure_advance": "0.036"})
+    assert pc.writes[-2:] == [("put", {"filament_flow_ratio": "0.95", "pressure_advance": "0.036"}),
+                              ("select", {"type": "filament", "name": NAME})]
     assert pc.edited == PC
 
 
@@ -370,6 +371,28 @@ async def test_a_refused_reselect_after_the_rollback_is_reported(both):
     assert row["error"] == "write_failed" and row["edits_discarded"] is False
     assert "select_cancelled" in row["discard_error"] and "hint" in row
     assert pc.presets[NAME] == PC
+
+
+@respx.mock
+async def test_a_new_key_is_dropped_when_the_preset_is_on_the_filament_tab_but_in_no_slot(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.tab = NAME
+    _failed_save_with_a_new_key(pc)
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "write_failed" and row["edits_discarded"] is True
+    assert "still_modified" not in row and row["reselected"] == []
+    assert pc.edited == PC and pc.tab == NAME
+
+
+@respx.mock
+async def test_a_new_key_left_on_the_filament_tab_outside_every_slot_is_reported(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT})
+    pc.tab = NAME
+    _failed_save_with_a_new_key(pc)
+    pc.reselect_keeps_edits = True
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["edits_discarded"] is False
+    assert row["still_modified"] == ["filament_cooling_final_speed"] and "hint" in row
 
 
 class SelectionClient:
