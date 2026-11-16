@@ -3255,6 +3255,16 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
         row |= {"action": "create"}
     changes = _psync.target_changes(gestor_file, start, parent, ptype in _psync.PER_VARIANT_TYPES,
                                     _psync.gestor_own_keys(ptype))
+    if pc is not None and start_name != name:
+        own = {k: pc[k] for k in _psync.gestor_own_keys(ptype) if k in pc and pc[k] != start.get(k)}
+        lost = sorted(sensitive_keys(own))
+        if lost:
+            return row | {"error": "own_keys_not_kept", "keys": lost,
+                          "detail": "the PC preset inherits from another base than the Gestor file, so it would be "
+                                    "saved again from that base, and these keys the PC holds its own way are "
+                                    "protected and cannot be written back; nothing was changed",
+                          "hint": "give the PC preset the base the Gestor file inherits from by hand in OrcaSlicer, then run again"}
+        changes |= own
     blocked = set(sensitive_keys(changes))
     if blocked:
         row["skipped_keys"] = [{"key": k, "gestor": gestor_file.get(k),

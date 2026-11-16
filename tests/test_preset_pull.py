@@ -599,8 +599,8 @@ def test_printer_target_changes_skip_the_format_keys_and_keep_the_slicer_length(
     assert ps.fit_to_current("machine_max_speed_x", ["500", "400"], ["600"] * 8) == ["500", "400"]
 
 
-def _machine_pc():
-    configs = {"Queue": MACHINE_PC, "Base": MACHINE_PARENT}
+def _machine_pc(queue=MACHINE_PC):
+    configs = {"Queue": queue, "Base": MACHINE_PARENT}
     respx.get(f"{BASE}/presets").mock(return_value=httpx.Response(200, json={
         "filament": [], "print": [],
         "printer": [{"name": "Queue", "system": False}, {"name": "Base", "system": True}]}))
@@ -675,6 +675,28 @@ async def test_the_tool_never_writes_a_printer_preset_into_the_gestor(both):
         assert row["error"] == "printer_kept_by_gestor" and "printer_model" in row["detail"]
         assert "action" not in row and "dry_run" not in row
     assert not trash.called and not upload.called
+
+
+@respx.mock
+async def test_a_printer_saved_again_from_another_base_keeps_the_keys_the_pc_holds_its_own_way(both):
+    put = _machine_pc(MACHINE_PC | {"inherits": "Older base"})
+    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    row = (await srv.sync_presets("gestor_to_pc", ["Queue"]))["presets"][0]
+    assert row["start_from"] == "Base" and row["dry_run"] is True
+    changes = ps.target_changes(MACHINE_FILE, MACHINE_PARENT, MACHINE_PARENT, True, ps.gestor_own_keys("printer"))
+    assert "support_chamber_temp_control" not in changes
+    assert row["keys_to_write"] == len(changes) + 1
+    assert not put.called
+
+
+@respx.mock
+async def test_a_printer_from_another_base_is_refused_when_a_protected_key_of_the_pc_would_be_lost(both):
+    put = _machine_pc(MACHINE_PC | {"inherits": "Older base", "machine_start_gcode": "M191 S60\\nG90"})
+    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    for dry_run in (True, False):
+        row = (await srv.sync_presets("gestor_to_pc", ["Queue"], dry_run=dry_run))["presets"][0]
+        assert row["error"] == "own_keys_not_kept" and row["keys"] == ["machine_start_gcode"]
+    assert not put.called
 
 
 def test_the_keys_each_side_keeps_are_set_apart_only_for_printers():
