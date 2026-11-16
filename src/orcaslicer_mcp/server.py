@@ -1508,6 +1508,11 @@ def _queue_unidentified(queue: dict) -> Counter:
     return Counter((j.get("filename"), j.get("createdAt")) for j in _queue_pending(queue) if not j.get("id"))
 
 
+def _queue_unrecognised(unidentified: Counter, before: Counter) -> int:
+    dated_before = Counter({key: count for key, count in before.items() if key[1]})
+    return (unidentified - dated_before).total()
+
+
 def _queue_job_summary(job: dict) -> dict:
     return {k: job.get(k) for k in ("id", "filename", "status", "position", "createdAt")}
 
@@ -1544,7 +1549,7 @@ async def _find_new_queue_job(g: GestorClient, before: QueueSnapshot) -> NewQueu
         unidentified = _queue_unidentified(queue)
         found = NewQueueJobs(
             [j for j in _queue_pending(queue) if j.get("id") and j["id"] not in before.known_ids],
-            (unidentified - before.unidentified).total(),
+            _queue_unrecognised(unidentified, before.unidentified),
             unidentified.total(),
         )
         if found.identified:
@@ -1591,8 +1596,8 @@ async def _confirm_queue_job(g: GestorClient, before: QueueSnapshot, hold: bool)
         if len(found.identified) > 1:
             detail = "several new jobs appeared at once; not guessing which one is this plate"
         elif found.identified:
-            detail = (f"a new job with an id appeared together with {found.unidentified} new pending job(s) "
-                      "without an id; not guessing which one is this plate")
+            detail = (f"a new job with an id appeared together with {found.unidentified} pending job(s) without an id "
+                      "that were not there, or cannot be recognised, before sending; not guessing which one is this plate")
         elif found.pending_without_id:
             detail = (f"no new job with an id showed up; {found.pending_without_id} pending job(s) have no id, "
                       "so this plate cannot be identified")

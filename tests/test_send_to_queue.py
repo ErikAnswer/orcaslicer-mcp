@@ -275,7 +275,7 @@ async def test_non_object_queue_with_hold_sends_nothing():
 
 @respx.mock
 async def test_jobs_without_id_neither_hide_nor_become_the_new_job():
-    anon = {"filename": "anon.gcode.3mf", "status": "queued"}
+    anon = {"filename": "anon.gcode.3mf", "status": "queued", "createdAt": "2026-11-14T06:00:00Z"}
     respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([anon]), _state([anon, NEW])])
     _orca_ok()
     out = await srv.send_to_queue()
@@ -334,7 +334,7 @@ async def test_new_job_without_id_next_to_a_new_one_with_id_is_ambiguous():
     _orca_ok()
     out = await srv.send_to_queue(hold=True)
     assert out["sent"] is True and out["queue_confirmed"] is False and out["held"] is False
-    assert "1 new pending job(s) without an id" in out["queue_detail"]
+    assert "1 pending job(s) without an id" in out["queue_detail"]
     assert out["candidates"] == [srv._queue_job_summary(NEW)] and "job" not in out
     assert not action.called
 
@@ -360,7 +360,7 @@ async def test_replaced_job_without_id_next_to_a_new_one_with_id_is_ambiguous():
 
 @respx.mock
 async def test_same_job_without_id_changing_status_does_not_block_the_new_one():
-    anon = {"filename": "anon.gcode.3mf", "status": "queued", "position": 0}
+    anon = {"filename": "anon.gcode.3mf", "status": "queued", "position": 0, "createdAt": "2026-11-14T06:00:00Z"}
     respx.get(f"{GESTOR}/api/state").mock(side_effect=[
         _state([anon]), _state([NEW], current=anon | {"status": "printing", "position": None})])
     _orca_ok()
@@ -372,3 +372,15 @@ def test_unidentified_counts_pending_jobs_without_id_by_filename_and_date():
     twin = {"filename": "a.gcode.3mf", "createdAt": "t"}
     queue = {"jobs": [twin, twin, OLD], "history": [{"filename": "h"}], "current": {"filename": "c"}}
     assert srv._queue_unidentified(queue) == {("a.gcode.3mf", "t"): 2, ("c", None): 1}
+
+
+@respx.mock
+async def test_undated_job_without_id_replaced_by_a_twin_next_to_a_new_one_with_id_is_ambiguous():
+    printing = {"filename": "cube.gcode.3mf", "status": "printing"}
+    sent = {"filename": "cube.gcode.3mf", "status": "queued"}
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([], current=printing), _state([sent, NEW])])
+    action = respx.post(f"{GESTOR}/api/queue/action").mock(return_value=httpx.Response(200, json={}))
+    _orca_ok()
+    out = await srv.send_to_queue(hold=True)
+    assert out["queue_confirmed"] is False and out["held"] is False and not action.called
+    assert out["candidates"] == [srv._queue_job_summary(NEW)]
