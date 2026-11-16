@@ -2986,6 +2986,22 @@ def _diff_rows(comparison) -> dict:
     return out
 
 
+_GESTOR_KEEPS_NOTE = ("each side holds these keys its own way (start G-code and chamber control of the "
+                      "headless queue, printer connection, default profiles of its OrcaSlicer version); "
+                      "they are not differences and sync_presets never copies them")
+
+
+def _kept_apart(comparison) -> dict:
+    if not comparison.kept_apart:
+        return {}
+    return {"gestor_keeps": [d.key for d in comparison.kept_apart], "gestor_keeps_note": _GESTOR_KEEPS_NOTE}
+
+
+def _compare_presets(ptype: str, pc: dict, gestor_file: dict, gestor_parent: dict | None):
+    return _psync.compare(pc, gestor_file, gestor_parent, ptype in _psync.PER_VARIANT_TYPES,
+                          _psync.gestor_own_keys(ptype))
+
+
 async def _parent_config(c, ptype: str, name: str) -> dict | None:
     if not name:
         return {}
@@ -3007,9 +3023,9 @@ async def _sync_one_compare(c, g, ptype: str, name: str, gestor_entry: dict | No
     if pc is None:
         return row | {"status": "only_gestor", "gestor_path": gestor_entry["path"]}
     parent = await _parent_config(c, ptype, gestor_file.get("inherits", "") or "")
-    comparison = _psync.compare(pc, gestor_file, parent, ptype in _psync.PER_VARIANT_TYPES)
+    comparison = _compare_presets(ptype, pc, gestor_file, parent)
     row |= {"status": "different" if comparison.differences else "same",
-            "gestor_path": gestor_entry["path"]}
+            "gestor_path": gestor_entry["path"]} | _kept_apart(comparison)
     return row | (_diff_rows(comparison) if comparison.differences else {})
 
 
@@ -3026,6 +3042,12 @@ def _unsafe_file_name(name: str) -> bool:
 async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
                     status: dict, dry_run: bool) -> dict:
     row: dict = {"type": ptype, "name": name}
+    if ptype == "printer":
+        return row | {"error": "printer_kept_by_gestor",
+                      "detail": "the Gestor 3D keeps its own printer preset: its headless slicing needs the "
+                                "complete file with printer_model and its own start G-code (the queue drives "
+                                "the chamber), which the PC preset does not hold; nothing was written",
+                      "hint": "compare shows what really differs; change the Gestor 3D printer preset in the Gestor itself"}
     try:
         stored = await c.get_preset_config(ptype, name)
     except NotFound:
@@ -3049,8 +3071,8 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
     new_file = _psync.build_file(ptype, name, pc, parent, existing)
     content = _psync.dump_file(new_file)
     if existing is not None:
-        comparison = _psync.compare(pc, existing, await _parent_config(c, ptype, existing.get("inherits", "") or ""),
-                                    ptype in _psync.PER_VARIANT_TYPES)
+        comparison = _compare_presets(ptype, pc, existing,
+                                      await _parent_config(c, ptype, existing.get("inherits", "") or ""))
         if not comparison.differences:
             return row | {"action": "none", "status": "same"}
         row |= {"action": "replace"} | _diff_rows(comparison)
@@ -3224,13 +3246,25 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
         return row | {"error": "no_base",
                       "detail": "the Gestor file inherits from nothing and the PC has no preset with this name to start from"}
     if pc is not None:
-        comparison = _psync.compare(pc, gestor_file, parent, ptype in _psync.PER_VARIANT_TYPES)
+        comparison = _compare_presets(ptype, pc, gestor_file, parent)
+        row |= _kept_apart(comparison)
         if not comparison.differences:
             return row | {"action": "none", "status": "same"}
         row |= {"action": "replace"} | _diff_rows(comparison)
     else:
         row |= {"action": "create"}
-    changes = _psync.target_changes(gestor_file, start, parent, ptype in _psync.PER_VARIANT_TYPES)
+    changes = _psync.target_changes(gestor_file, start, parent, ptype in _psync.PER_VARIANT_TYPES,
+                                    _psync.gestor_own_keys(ptype))
+    if pc is not None and start_name != name:
+        own = {k: pc[k] for k in _psync.gestor_own_keys(ptype) if k in pc and pc[k] != start.get(k)}
+        lost = sorted(sensitive_keys(own))
+        if lost:
+            return row | {"error": "own_keys_not_kept", "keys": lost,
+                          "detail": "the PC preset inherits from another base than the Gestor file, so it would be "
+                                    "saved again from that base, and these keys the PC holds its own way are "
+                                    "protected and cannot be written back; nothing was changed",
+                          "hint": "give the PC preset the base the Gestor file inherits from by hand in OrcaSlicer, then run again"}
+        changes |= own
     blocked = set(sensitive_keys(changes))
     if blocked:
         row["skipped_keys"] = [{"key": k, "gestor": gestor_file.get(k),
@@ -3276,8 +3310,7 @@ async def _pull_one(c, g, ptype: str, name: str, gestor_entry: dict | None, dry_
         row["filament_tab"] = tab_warning
     if failure:
         return row | failure
-    after = _psync.compare((await c.get_preset_config(ptype, name)).get("config", {}), gestor_file, parent,
-                           ptype in _psync.PER_VARIANT_TYPES)
+    after = _compare_presets(ptype, (await c.get_preset_config(ptype, name)).get("config", {}), gestor_file, parent)
     left = [d.key for d in after.differences if d.key not in blocked]
     row["written"] = True
     row["verified"] = not left
@@ -3301,8 +3334,12 @@ async def sync_presets(
     """Compare the user presets of the OrcaSlicer on the PC with the copies the Gestor 3D keeps for its own slicing (autoslice and Laminador), and copy presets either way.
 
     Values are compared as effective settings (parent preset plus overrides), key by key; status
-    is same, different, only_pc or only_gestor. pc_to_gestor sends the SAVED preset, written
-    like OrcaSlicer's own export (only what differs from its parent, with inherits). It refuses
+    is same, different, only_pc or only_gestor. For a printer preset the keys each side holds
+    its own way (start G-code, chamber control, printer connection, default profiles) are named
+    in gestor_keeps instead of counting as differences, and no direction copies them.
+    pc_to_gestor sends the SAVED preset, written like OrcaSlicer's own export (only what differs
+    from its parent, with inherits). It never writes a printer preset (printer_kept_by_gestor:
+    the Gestor's headless slicing needs its own complete file). It refuses
     a preset with unsaved edits in the PC, never sends system presets and never writes redacted
     credentials. Before replacing a Gestor copy it moves the old one to the Gestor's trash, from
     where it can be restored (and restores it if the upload fails); that direction changes

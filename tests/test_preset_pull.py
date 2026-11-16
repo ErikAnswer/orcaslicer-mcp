@@ -599,8 +599,8 @@ def test_printer_target_changes_skip_the_format_keys_and_keep_the_slicer_length(
     assert ps.fit_to_current("machine_max_speed_x", ["500", "400"], ["600"] * 8) == ["500", "400"]
 
 
-def _machine_pc():
-    configs = {"Queue": MACHINE_PC, "Base": MACHINE_PARENT}
+def _machine_pc(queue=MACHINE_PC):
+    configs = {"Queue": queue, "Base": MACHINE_PARENT}
     respx.get(f"{BASE}/presets").mock(return_value=httpx.Response(200, json={
         "filament": [], "print": [],
         "printer": [{"name": "Queue", "system": False}, {"name": "Base", "system": True}]}))
@@ -623,10 +623,11 @@ MACHINE_ENTRY = [{"path": "Queue.json", "name": "Queue", "kind": "machine"}]
 @respx.mock
 async def test_the_tool_compares_a_printer_preset_without_the_2_5_storage_differences(both):
     _machine_pc()
-    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    _gestor(MACHINE_FILE | {"printable_height": "250"}, MACHINE_ENTRY)
     row = (await srv.sync_presets())["presets"][0]
     assert row["type"] == "printer" and row["status"] == "different"
-    assert [d["key"] for d in row["differences"]] == ["support_chamber_temp_control"]
+    assert [d["key"] for d in row["differences"]] == ["printable_height"]
+    assert row["gestor_keeps"] == ["support_chamber_temp_control"]
 
 
 @respx.mock
@@ -641,11 +642,94 @@ async def test_the_tool_finds_a_2_4_printer_copy_the_same_as_its_2_5_preset(both
 @respx.mock
 async def test_the_tool_plans_only_the_real_change_of_a_printer_preset(both):
     put = _machine_pc()
-    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    _gestor(MACHINE_FILE | {"printable_height": "250"}, MACHINE_ENTRY)
     row = (await srv.sync_presets("gestor_to_pc", ["Queue"]))["presets"][0]
     assert row["action"] == "replace" and row["dry_run"] is True and row["keys_to_write"] == 1
-    assert [d["key"] for d in row["differences"]] == ["support_chamber_temp_control"]
+    assert [d["key"] for d in row["differences"]] == ["printable_height"]
+    assert row["gestor_keeps"] == ["support_chamber_temp_control"]
     assert not put.called
+
+
+@respx.mock
+async def test_the_tool_finds_a_printer_the_same_when_only_the_keys_each_side_keeps_differ(both):
+    put = _machine_pc()
+    _gestor(MACHINE_FILE | {"machine_start_gcode": "M191 S0\nG90"}, MACHINE_ENTRY)
+    row = (await srv.sync_presets())["presets"][0]
+    assert row["status"] == "same" and "differences" not in row
+    assert row["gestor_keeps"] == ["machine_start_gcode", "support_chamber_temp_control"]
+    assert "never copies them" in row["gestor_keeps_note"]
+    pulled = (await srv.sync_presets("gestor_to_pc", ["Queue"], dry_run=False))["presets"][0]
+    assert pulled["action"] == "none" and pulled["status"] == "same"
+    assert pulled["gestor_keeps"] == ["machine_start_gcode", "support_chamber_temp_control"]
+    assert not put.called
+
+
+@respx.mock
+async def test_the_tool_never_writes_a_printer_preset_into_the_gestor(both):
+    _machine_pc()
+    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    trash = respx.post(f"{GESTOR}/api/trash").mock(return_value=httpx.Response(201, json={"entry": {"id": "T1"}}))
+    upload = respx.post(f"{GESTOR}/api/preset-upload").mock(return_value=httpx.Response(201, json={"preset": {}}))
+    for dry_run in (True, False):
+        row = (await srv.sync_presets("pc_to_gestor", ["Queue"], dry_run=dry_run))["presets"][0]
+        assert row["error"] == "printer_kept_by_gestor" and "printer_model" in row["detail"]
+        assert "action" not in row and "dry_run" not in row
+    assert not trash.called and not upload.called
+
+
+@respx.mock
+async def test_a_printer_saved_again_from_another_base_keeps_the_keys_the_pc_holds_its_own_way(both):
+    put = _machine_pc(MACHINE_PC | {"inherits": "Older base"})
+    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    row = (await srv.sync_presets("gestor_to_pc", ["Queue"]))["presets"][0]
+    assert row["start_from"] == "Base" and row["dry_run"] is True
+    changes = ps.target_changes(MACHINE_FILE, MACHINE_PARENT, MACHINE_PARENT, True, ps.gestor_own_keys("printer"))
+    assert "support_chamber_temp_control" not in changes
+    assert row["keys_to_write"] == len(changes) + 1
+    assert not put.called
+
+
+@respx.mock
+async def test_the_write_from_another_base_sends_the_pc_value_of_its_own_printer_keys(both):
+    put = _machine_pc(MACHINE_PC | {"inherits": "Older base"})
+    respx.put(f"{BASE}/preset").mock(return_value=httpx.Response(200, json={"selected": "Base"}))
+    respx.post(f"{BASE}/preset/save").mock(return_value=httpx.Response(200, json={"saved": "Queue"}))
+    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    row = (await srv.sync_presets("gestor_to_pc", ["Queue"], dry_run=False))["presets"][0]
+    assert row["written"] is True
+    sent = json.loads(put.calls.last.request.read())
+    assert sent["support_chamber_temp_control"] == "1" and "machine_start_gcode" not in sent
+
+
+@respx.mock
+async def test_a_printer_from_another_base_is_refused_when_a_protected_key_of_the_pc_would_be_lost(both):
+    put = _machine_pc(MACHINE_PC | {"inherits": "Older base", "machine_start_gcode": "M191 S60\\nG90"})
+    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    for dry_run in (True, False):
+        row = (await srv.sync_presets("gestor_to_pc", ["Queue"], dry_run=dry_run))["presets"][0]
+        assert row["error"] == "own_keys_not_kept" and row["keys"] == ["machine_start_gcode"]
+    assert not put.called
+
+
+def test_the_keys_each_side_keeps_are_set_apart_only_for_printers():
+    assert ps.gestor_own_keys("filament") == frozenset() == ps.gestor_own_keys("print")
+    own = ps.gestor_own_keys("printer")
+    assert {"machine_start_gcode", "support_chamber_temp_control", "print_host"} <= own
+    comparison = ps.compare(MACHINE_PC, MACHINE_FILE, MACHINE_PARENT, per_variant=True, own_keys=own)
+    assert comparison.differences == []
+    assert [(d.key, d.pc, d.gestor) for d in comparison.kept_apart] == [("support_chamber_temp_control", "1", "0")]
+    file = MACHINE_FILE | {"hotend_heating_rate": ["3"]}
+    assert ps.target_changes(file, MACHINE_PC, MACHINE_PARENT, per_variant=True, own_keys=own) == {
+        "hotend_heating_rate": "3,3,3,3"}
+
+
+def test_a_hotend_rate_orcaslicer_2_5_stores_as_nil_is_unset_not_different():
+    assert ps.same_value("hotend_cooling_rate", "nil,2,2,2", ["2"], per_variant=True)
+    assert ps.same_value("hotend_heating_rate", ["2"], "2,nil,2,nil", per_variant=True)
+    assert not ps.same_value("hotend_cooling_rate", "nil,2,3,2", ["2"], per_variant=True)
+    assert not ps.same_value("hotend_cooling_rate", "nil,nil,nil,nil", ["2"], per_variant=True)
+    assert not ps.same_value("hotend_cooling_rate", "nil,2,2,2", ["2"])
+    assert not ps.same_value("nozzle_temperature", "nil,230,230", ["230"], per_variant=True)
 
 
 def test_printer_and_print_vectors_keep_their_length_strict():
