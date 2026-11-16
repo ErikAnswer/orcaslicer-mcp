@@ -204,6 +204,17 @@ _PER_VARIANT_PAIR_KEYS = _MACHINE_LIMIT_KEYS | frozenset({
     "machine_max_acceleration_travel", "machine_max_junction_deviation"})
 _ONE_VERSION_KEYS = frozenset({"extruder_nozzle_stats", "silent_mode"})
 PER_VARIANT_TYPES = frozenset({"filament", "printer"})
+_UNSET_ITEM = "nil"
+GESTOR_OWN_KEYS = {"printer": frozenset({
+    "machine_start_gcode", "support_chamber_temp_control", "print_host", "print_host_webui",
+    "default_filament_profile", "default_print_profile", "file_start_gcode"})}
+
+
+def gestor_own_keys(ptype: str) -> frozenset:
+    """What each side has to hold its own way and no copy may level: the Gestor 3D slices
+    headless with OrcaSlicer 2.4 and its queue drives the chamber, the PC runs 2.5 and prints
+    through that queue."""
+    return GESTOR_OWN_KEYS.get(ptype, frozenset())
 
 
 def same_value(key: str, a, b, per_variant: bool = False) -> bool:
@@ -214,7 +225,8 @@ def same_value(key: str, a, b, per_variant: bool = False) -> bool:
     printer_options_with_variant_1, where one item matches a vector repeating it (a one-item
     variant list matches a variant list it starts); and the machine limits of
     printer_options_with_variant_2, where the normal,silent pair matches a vector that starts
-    with it and goes on repeating the pair or its first value, the two ways 2.5 fills them."""
+    with it and goes on repeating the pair or its first value, the two ways 2.5 fills them.
+    A hotend rate 2.5 stores as nil for a variant is unset there and matches any item."""
     ca, cb = canonical(key, a), canonical(key, b)
     if ca == cb:
         return True
@@ -227,6 +239,9 @@ def same_value(key: str, a, b, per_variant: bool = False) -> bool:
         return False
     if key == _VARIANT_KEY:
         return long[0] == short[0]
+    if key in _PER_VARIANT_PRINTER_KEYS:
+        long = tuple(item for item in long if item != _UNSET_ITEM)
+        return bool(long) and all(item == short[0] for item in long)
     return all(item == short[0] for item in long)
 
 
@@ -273,6 +288,7 @@ class Difference:
 class Comparison:
     differences: list[Difference] = field(default_factory=list)
     parent_known: bool = True
+    kept_apart: list[Difference] = field(default_factory=list)
 
 
 def build_file(ptype: str, name: str, pc_config: dict, parent_config: dict | None,
@@ -306,11 +322,12 @@ def dump_file(preset: dict) -> bytes:
 
 
 def target_changes(gestor_file: dict, start_config: dict, parent_config: dict,
-                   per_variant: bool = False) -> dict:
+                   per_variant: bool = False, own_keys: frozenset = frozenset()) -> dict:
     """What to write over start_config (the preset selected in the slicer) so it holds the
     Gestor file laid over parent_config, as API text. Keys whose current value is a redacted
-    credential are left alone, and saving sets the settings ids."""
-    skip = FILE_ONLY_KEYS | set(SETTINGS_ID_KEY.values())
+    credential are left alone, own_keys stay as the slicer has them, and saving sets the
+    settings ids."""
+    skip = FILE_ONLY_KEYS | set(SETTINGS_ID_KEY.values()) | own_keys
     changes = {}
     for key in sorted((set(gestor_file) | set(start_config)) - skip):
         current = start_config.get(key)
@@ -331,13 +348,14 @@ def target_changes(gestor_file: dict, start_config: dict, parent_config: dict,
 
 
 def compare(pc_config: dict, gestor_file: dict, gestor_parent: dict | None,
-            per_variant: bool = False) -> Comparison:
+            per_variant: bool = False, own_keys: frozenset = frozenset()) -> Comparison:
     """Effective values on both sides: the PC's full config against the Gestor file laid over
     its parent as read from the PC (system presets match; a 2.5 PC holds some filament and
     printer vectors per extruder variant where the Gestor's 2.4 files hold one item or pair,
     which same_value accepts with per_variant, set for filament and printer presets, and the
     keys only one of the two versions has are left out).
-    Without that parent only the keys the Gestor file states are compared."""
+    Without that parent only the keys the Gestor file states are compared. A different value
+    of one of own_keys is listed in kept_apart, not as a difference."""
     result = Comparison(parent_known=gestor_parent is not None)
     pc_inherits = pc_config.get("inherits", "") or ""
     gestor_inherits = gestor_file.get("inherits", "") or ""
@@ -359,5 +377,6 @@ def compare(pc_config: dict, gestor_file: dict, gestor_parent: dict | None,
         if only_in_one_version(key, pc_value, gestor_value, per_variant):
             continue
         if not same_value(key, pc_value, gestor_value, per_variant):
-            result.differences.append(Difference(key, pc_value, gestor_value))
+            found = result.kept_apart if key in own_keys else result.differences
+            found.append(Difference(key, pc_value, gestor_value))
     return result
