@@ -9,7 +9,8 @@ LobeHub, Glama or GitHub releases.
 The package on PyPI, the OrcaSlicer MCP plugin on OrcaCloud and the listings are MaxEllis's, so the text that
 points at them is correct and stays as upstream wrote it:
 
-- `README.md`, `pyproject.toml`, `.claude-plugin/`, `plugin/` and `docs/`.
+- `README.md`, `pyproject.toml`, `.claude-plugin/`, `.github/FUNDING.yml`, `plugin/` and `docs/` (except this
+  file, which exists only in the fork).
 - `packaging/lhm.plugin.json` and `packaging/mcpb/manifest.json`. Nothing here publishes them; tests read both,
   and `scripts/gen_lhm_tools.py` keeps the `tools` list of the first in step with this fork's tools.
 - The notices for the plugin on stock OrcaSlicer (`src/orcaslicer_mcp/plugin_update.py`, `plugin_text.py`,
