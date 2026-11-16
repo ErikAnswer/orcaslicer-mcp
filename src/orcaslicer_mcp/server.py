@@ -2009,6 +2009,11 @@ _INVALID_PROJECT_NAME = {
 }
 _NO_PROJECTS_FOLDER = {"error": "projects_folder",
                        "detail": "OrcaSlicer did not report its projects folder"}
+_OPEN_UNSAVED_CHANGES = {
+    "error": "unsaved_changes",
+    "detail": ("The open project has unsaved changes and nothing was opened; save_project first, "
+               "or after asking the user pass discard_unsaved=True to throw them away."),
+}
 
 
 @mcp.tool()
@@ -2109,6 +2114,8 @@ async def open_project(
                         "detail": "save or discard the preset edits in OrcaSlicer first"}
             return await c.open_project(project_path(folder, listed), discard_unsaved)
     except ApiError as e:
+        if e.body.get("error") == "unsaved_changes":
+            return dict(_OPEN_UNSAVED_CHANGES)
         return _projects_err(e)
 
 

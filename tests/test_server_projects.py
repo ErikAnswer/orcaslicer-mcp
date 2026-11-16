@@ -106,11 +106,13 @@ async def test_open_project_does_not_discard_by_default():
     respx.get(f"{BASE}/projects").mock(return_value=httpx.Response(200, json=LISTING))
     respx.get(f"{BASE}/project").mock(return_value=_project())
     route = respx.post(f"{BASE}/project/open").mock(return_value=httpx.Response(
-        409, json={"error": "unsaved_changes", "detail": "pass if_unsaved"}))
+        422, json={"error": "unsaved_changes", "detail": "pass if_unsaved: save or discard"}))
     out = await srv.open_project("Soporte")
     assert json.loads(route.calls.last.request.read()) == {
         "path": FOLDER + "\\soporte.3mf", "if_unsaved": "fail", "presets": "project"}
-    assert out["error"].startswith("unsaved_changes")
+    assert out["error"] == "unsaved_changes"
+    assert "discard_unsaved=True" in out["detail"] and "save_project" in out["detail"]
+    assert "if_unsaved" not in json.dumps(out)
 
 
 @respx.mock
