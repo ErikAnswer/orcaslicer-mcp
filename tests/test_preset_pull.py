@@ -595,6 +595,55 @@ def test_printer_target_changes_skip_the_format_keys_and_keep_the_slicer_length(
     assert ps.fit_to_current("machine_max_speed_x", ["500", "400"], ["600"] * 8) == ["500", "400"]
 
 
+def _machine_pc():
+    configs = {"Queue": MACHINE_PC, "Base": MACHINE_PARENT}
+    respx.get(f"{BASE}/presets").mock(return_value=httpx.Response(200, json={
+        "filament": [], "print": [],
+        "printer": [{"name": "Queue", "system": False}, {"name": "Base", "system": True}]}))
+
+    def preset_config(request):
+        name = json.loads(request.read())["name"]
+        if name not in configs:
+            return httpx.Response(404, json={"error": "unknown_preset"})
+        return httpx.Response(200, json={"name": name, "system": name == "Base", "config": configs[name]})
+    respx.post(f"{BASE}/preset/config").mock(side_effect=preset_config)
+    respx.get(f"{BASE}/status").mock(return_value=httpx.Response(200, json={
+        "presets": {"print": "p", "printer": "Queue", "filaments": ["f"]},
+        "modified": {"print": [], "printer": [], "filament": []}}))
+    return respx.put(f"{BASE}/config").mock(return_value=httpx.Response(200, json={"applied": [], "errors": {}}))
+
+
+MACHINE_ENTRY = [{"path": "Queue.json", "name": "Queue", "kind": "machine"}]
+
+
+@respx.mock
+async def test_the_tool_compares_a_printer_preset_without_the_2_5_storage_differences(both):
+    _machine_pc()
+    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    row = (await srv.sync_presets())["presets"][0]
+    assert row["type"] == "printer" and row["status"] == "different"
+    assert [d["key"] for d in row["differences"]] == ["support_chamber_temp_control"]
+
+
+@respx.mock
+async def test_the_tool_finds_a_2_4_printer_copy_the_same_as_its_2_5_preset(both):
+    _machine_pc()
+    _gestor(MACHINE_FILE | {"support_chamber_temp_control": "1"}, MACHINE_ENTRY)
+    assert (await srv.sync_presets())["presets"][0]["status"] == "same"
+    row = (await srv.sync_presets("gestor_to_pc", ["Queue"]))["presets"][0]
+    assert row["action"] == "none" and row["status"] == "same"
+
+
+@respx.mock
+async def test_the_tool_plans_only_the_real_change_of_a_printer_preset(both):
+    put = _machine_pc()
+    _gestor(MACHINE_FILE, MACHINE_ENTRY)
+    row = (await srv.sync_presets("gestor_to_pc", ["Queue"]))["presets"][0]
+    assert row["action"] == "replace" and row["dry_run"] is True and row["keys_to_write"] == 1
+    assert [d["key"] for d in row["differences"]] == ["support_chamber_temp_control"]
+    assert not put.called
+
+
 def test_printer_and_print_vectors_keep_their_length_strict():
     assert not ps.same_value("nozzle_diameter", "0.4,0.4", ["0.4"])
     assert ps.fit_to_current("nozzle_diameter", ["0.4"], ["0.4", "0.4"]) == ["0.4"]
