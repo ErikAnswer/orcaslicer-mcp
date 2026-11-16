@@ -1603,7 +1603,7 @@ def _add_preset_edits(out: dict, before: tuple[dict | None, dict | None],
         out["preset_edits_overwritten"] = overwritten
     if edits or overwritten:
         suffix = (_CALIBRATION_OVERWRITTEN_DETAIL if values_known else _CALIBRATION_MAYBE_OVERWRITTEN_DETAIL)
-        filament_note = _CALIBRATION_FILAMENT_WHOLE_VALUE if "filament" in overwritten else ""
+        filament_note = _CALIBRATION_FILAMENT_WHOLE_VALUE if values_known and "filament" in overwritten else ""
         out["preset_edits_detail"] = _CALIBRATION_EDITS_DETAIL + (suffix + filament_note if overwritten else "")
 
 
