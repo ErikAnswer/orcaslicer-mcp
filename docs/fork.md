@@ -24,3 +24,5 @@ do not exist.
 Everything that publishes: `scripts/cut-release.sh`, `scripts/cut-plugin-release.sh`, `.github/workflows/`,
 `packaging/server.json`, `plugin/orcacloud/` and `glama.json`. A merge from upstream brings them back as
 conflicts or new files; delete them again. `tests/test_fork_not_published.py` fails while any of them exists.
+The test knows these paths by name: when a merge brings a publishing script or manifest under a new name, delete
+it and add its path to the list in that test.
