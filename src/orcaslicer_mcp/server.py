@@ -902,9 +902,10 @@ async def _resolve_reverts(c, changes: dict, slot: int | None = None) -> tuple[d
 
 _NOT_REVERTED_DETAIL = (
     "The keys under not_reverted still show as unsaved edits after being put back. Likely cause: OrcaSlicer MCP "
-    "builds up to erik-v2.5.0-mcp.17, and the plugin before 0.2.4, report the edited value of the selected "
-    "preset as its saved one, so the same value was written again (get_preset_config shows it too). Set the "
-    "value you want instead of null; updating OrcaSlicer or the plugin is what fixes that cause.")
+    "builds without the saved-preset fix (ErikAnswer builds up to erik-v2.5.0-mcp.17 and the MaxEllis builds), "
+    "and the plugin before 0.2.4, report the edited value of the selected preset as its saved one, so the same "
+    "value was written again (get_preset_config shows it too). Set the value you want instead of null; updating "
+    "OrcaSlicer or the plugin is what fixes that cause.")
 
 
 _REVERT_UNCHECKED_DETAIL = (
@@ -2811,9 +2812,10 @@ async def set_height_range(
 async def get_preset_config(type: str, name: str) -> dict:
     """Read every setting of a named preset as saved, without selecting it; get_config reads the live settings.
 
-    type = print|filament|printer. Unsaved edits are not included, except on OrcaSlicer MCP builds up to
-    erik-v2.5.0-mcp.17 and the plugin before 0.2.4, where the selected preset comes back with its unsaved
-    edits (get_status lists them under `modified`).
+    type = print|filament|printer. Unsaved edits are not included, except on OrcaSlicer MCP builds without
+    the saved-preset fix (ErikAnswer builds up to erik-v2.5.0-mcp.17 and the MaxEllis builds) and the plugin
+    before 0.2.4, where the selected preset comes back with its unsaved edits (get_status lists them under
+    `modified`).
     """
     try:
         async with _client() as c:
