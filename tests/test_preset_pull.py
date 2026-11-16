@@ -715,7 +715,8 @@ async def test_the_tool_never_writes_a_printer_preset_into_the_gestor(both):
     upload = respx.post(f"{GESTOR}/api/preset-upload").mock(return_value=httpx.Response(201, json={"preset": {}}))
     for dry_run in (True, False):
         row = (await srv.sync_presets("pc_to_gestor", ["Queue"], dry_run=dry_run))["presets"][0]
-        assert row["error"] == "printer_kept_by_gestor" and "printer_model" in row["detail"]
+        assert row["error"] == "printer_kept_by_gestor" and "on purpose" in row["detail"]
+        assert "printer_model" not in row["detail"]
         assert "action" not in row and "dry_run" not in row
     assert not trash.called and not upload.called
 
