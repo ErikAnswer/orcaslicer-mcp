@@ -589,8 +589,12 @@ def test_printer_target_changes_skip_the_format_keys_and_keep_the_slicer_length(
     file = MACHINE_FILE | {"machine_max_acceleration_x": ["25000", "15000"], "hotend_heating_rate": ["3"]}
     assert ps.target_changes(file, MACHINE_PC, MACHINE_PARENT, per_variant=True) == {
         "support_chamber_temp_control": "0",
-        "machine_max_acceleration_x": "25000,15000,25000,15000,25000,15000,25000,15000",
+        "machine_max_acceleration_x": "25000,15000,25000,25000,25000,25000,25000,25000",
         "hotend_heating_rate": "3,3,3,3"}
+    assert ps.fit_to_current("machine_max_speed_x", ["500", "400"], ["600", "300"] * 4, per_variant=True) == [
+        "500", "400"] * 4
+    assert ps.fit_to_current("machine_max_speed_x", ["500", "400"], ["600"] * 8, per_variant=True) == [
+        "500", "400"] * 4
     assert ps.fit_to_current("machine_max_speed_x", ["600"], ["600"] * 8, per_variant=True) == ["600"]
     assert ps.fit_to_current("machine_max_speed_x", ["500", "400"], ["600"] * 8) == ["500", "400"]
 

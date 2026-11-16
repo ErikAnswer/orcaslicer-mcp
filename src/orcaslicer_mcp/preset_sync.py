@@ -244,13 +244,18 @@ def only_in_one_version(key: str, a, b, per_variant: bool = False) -> bool:
 
 
 def fit_to_current(key: str, target, current, per_variant: bool = False):
-    """A short file vector written over a per-variant vector keeps the slicer length."""
+    """A short file vector written over a per-variant vector keeps the slicer length, and a
+    machine limit pair the way the slicer vector is filled: with its first value when it is,
+    with the pair otherwise."""
     if not (per_variant and isinstance(target, list) and isinstance(current, list)):
         return target
     if key in _PER_VARIANT_PAIR_KEYS:
-        if len(target) == 2 and len(current) > 2 and not len(current) % 2:
-            return target * (len(current) // 2)
-        return target
+        if len(target) != 2 or len(current) <= 2 or len(current) % 2:
+            return target
+        repeats = len(current) // 2
+        first_value_fills = (current != current[:2] * repeats
+                             and all(item == current[0] for item in current[2:]))
+        return target + [target[0]] * (len(current) - 2) if first_value_fills else target * repeats
     if (key in _PER_VARIANT_KEYS | _PER_VARIANT_PRINTER_KEYS and key != _VARIANT_KEY
             and len(target) == 1 and len(current) > 1):
         return target * len(current)
