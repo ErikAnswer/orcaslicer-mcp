@@ -3147,9 +3147,9 @@ async def _push_one(c, g, ptype: str, name: str, gestor_entry: dict | None,
     row: dict = {"type": ptype, "name": name}
     if ptype == "printer":
         return row | {"error": "printer_kept_by_gestor",
-                      "detail": "the Gestor 3D keeps its own printer preset: its headless slicing needs the "
-                                "complete file with printer_model and its own start G-code (the queue drives "
-                                "the chamber), which the PC preset does not hold; nothing was written",
+                      "detail": "the PC and the Gestor 3D each keep their own printer preset on purpose: the "
+                                "Gestor slices headless with its own start G-code, chamber control and "
+                                "connection, so the PC printer is never copied over it; nothing was written",
                       "hint": "compare shows what really differs; change the Gestor 3D printer preset in the Gestor itself"}
     try:
         stored = await c.get_preset_config(ptype, name)
@@ -3446,7 +3446,7 @@ async def sync_presets(
     in gestor_keeps instead of counting as differences, and no direction copies them.
     pc_to_gestor sends the SAVED preset, written like OrcaSlicer's own export (only what differs
     from its parent, with inherits). It never writes a printer preset (printer_kept_by_gestor:
-    the Gestor's headless slicing needs its own complete file). It refuses
+    each side keeps its own printer on purpose). It refuses
     a preset with unsaved edits in the PC, never sends system presets and never writes redacted
     credentials. Before replacing a Gestor copy it moves the old one to the Gestor's trash, from
     where it can be restored (and restores it if the upload fails); that direction changes
