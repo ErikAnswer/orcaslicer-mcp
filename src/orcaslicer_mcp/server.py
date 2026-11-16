@@ -1514,6 +1514,11 @@ _CALIBRATION_EDITS_DETAIL = (
 _CALIBRATION_OVERWRITTEN_DETAIL = (
     " The keys under preset_edits_overwritten already held unsaved edits before the test and it changed them: "
     "null would also throw away the earlier edit, so ask the user which value they want back.")
+_CALIBRATION_MAYBE_OVERWRITTEN_DETAIL = (
+    " The keys under preset_edits_overwritten already held unsaved edits before the test, and their values could "
+    "not be read to tell whether it changed them: null would also throw away the earlier edit, so ask the user "
+    "which value they want back.")
+_PRESET_EDIT_REPLY_KEYS = ("preset_edits", "preset_edits_overwritten", "modified_presets", "preset_edits_detail")
 _CALIBRATION_EDITS_UNCHECKED = (
     "get_status failed after the test was created, so which preset keys it left as unsaved edits is unknown; "
     "check get_status and put the test's edits back with set_config {key: null} when the test is done.")
@@ -1570,20 +1575,21 @@ def _add_preset_edits(out: dict, before: tuple[dict | None, dict | None],
             out["modified_presets"] = modified
             out["preset_edits_detail"] = _CALIBRATION_BEFORE_UNKNOWN
         return
+    values_known = before_values is not None and after_values is not None
     edits, overwritten = {}, {}
     for group in _CALIBRATION_EDIT_GROUPS:
         earlier = set(before_keys.get(group) or [])
         edits[group] = [k for k in after_keys.get(group) or [] if k not in earlier]
         overwritten[group] = [k for k in after_keys.get(group) or [] if k in earlier
-                              and before_values is not None and after_values is not None
-                              and before_values.get(k) != after_values.get(k)]
+                              and (not values_known or before_values.get(k) != after_values.get(k))]
     edits, overwritten = _non_empty(edits), _non_empty(overwritten)
     if edits:
         out["preset_edits"] = edits
     if overwritten:
         out["preset_edits_overwritten"] = overwritten
     if edits or overwritten:
-        out["preset_edits_detail"] = _CALIBRATION_EDITS_DETAIL + (_CALIBRATION_OVERWRITTEN_DETAIL if overwritten else "")
+        suffix = (_CALIBRATION_OVERWRITTEN_DETAIL if values_known else _CALIBRATION_MAYBE_OVERWRITTEN_DETAIL)
+        out["preset_edits_detail"] = _CALIBRATION_EDITS_DETAIL + (suffix if overwritten else "")
 
 
 @mcp.tool()
@@ -1630,14 +1636,18 @@ async def create_calibration(
         async with _client() as c:
             before = await _calibration_snapshot(c)
             out = await c.create_calibration(body)
+            _add_preset_edits(out, before, await _calibration_snapshot(c))
             if tool is not None:
                 assigned = []
-                for obj in out.get("objects", []):
-                    await c.set_object_config(obj["id"], {"extruder": tool})
-                    assigned.append(obj["id"])
+                try:
+                    for obj in out.get("objects", []):
+                        await c.set_object_config(obj["id"], {"extruder": tool})
+                        assigned.append(obj["id"])
+                except ApiError as e:
+                    return _err(e) | {"tool": tool, "assigned_objects": assigned} | {
+                        k: out[k] for k in _PRESET_EDIT_REPLY_KEYS if k in out}
                 out["tool"] = tool
                 out["assigned_objects"] = assigned
-            _add_preset_edits(out, before, await _calibration_snapshot(c))
             return out
     except ApiError as e:
         return _calibration_err(e)

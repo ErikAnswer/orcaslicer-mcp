@@ -162,6 +162,35 @@ async def test_calibration_reports_earlier_edits_it_overwrote():
 
 
 @respx.mock
+async def test_calibration_flags_earlier_edits_as_maybe_overwritten_when_config_fails():
+    _status({"print": ["outer_wall_speed"], "filament": ["slow_down_layer_time#0"]},
+            {"print": ["outer_wall_speed", "inner_wall_speed"], "filament": ["slow_down_layer_time#0"]})
+    respx.get(f"{BASE}/config").mock(return_value=httpx.Response(500, json={"error": "boom"}))
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert out["preset_edits"] == {"print": ["inner_wall_speed"]}
+    assert out["preset_edits_overwritten"] == {"print": ["outer_wall_speed"], "filament": ["slow_down_layer_time"]}
+    assert out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_MAYBE_OVERWRITTEN_DETAIL
+
+
+@respx.mock
+async def test_calibration_keeps_the_preset_edits_when_assigning_the_tool_fails():
+    _status({}, {"print": ["inner_wall_speed"]})
+    respx.get(f"{BASE}/config").mock(return_value=httpx.Response(200, json={"config": {}}))
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}, {"id": 8, "name": "pa_tower"}]}))
+    respx.put(f"{BASE}/objects/7/config").mock(return_value=httpx.Response(
+        200, json={"applied": ["extruder"], "errors": {}}))
+    respx.put(f"{BASE}/objects/8/config").mock(return_value=httpx.Response(500, json={"error": "boom"}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002, tool=2)
+    assert out["error"].startswith("boom")
+    assert out["assigned_objects"] == [7] and out["tool"] == 2
+    assert out["preset_edits"] == {"print": ["inner_wall_speed"]}
+    assert out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL
+
+
+@respx.mock
 async def test_calibration_does_not_claim_edits_when_the_earlier_status_failed():
     respx.get(f"{BASE}/status").mock(side_effect=[
         httpx.Response(500, json={"error": "boom"}),
