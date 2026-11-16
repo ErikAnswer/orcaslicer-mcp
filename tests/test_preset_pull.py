@@ -43,6 +43,7 @@ class FakeOrca:
         self.filaments_failures: set = set()
         self.filaments_reads = 0
         self.tab_select_error_for: str | None = None
+        self.status_error_after_put: str | None = None
         self.writes: list = []
 
     def install(self):
@@ -50,14 +51,19 @@ class FakeOrca:
             "filament": [{"name": n, "system": n.endswith("@System")} for n in self.presets],
             "print": [], "printer": []}))
         respx.post(f"{BASE}/preset/config").mock(side_effect=self._config)
-        respx.get(f"{BASE}/status").mock(side_effect=lambda r: httpx.Response(200, json={
-            "presets": {"print": self.selected["print"], "printer": self.selected["printer"],
-                        "filaments": list(self.selected["filament"])},
-            "modified": {"print": [], "printer": [], "filament": self._edited_keys()} | self.modified}))
+        respx.get(f"{BASE}/status").mock(side_effect=self._status)
         respx.put(f"{BASE}/preset").mock(side_effect=self._select)
         respx.get(f"{BASE}/filaments").mock(side_effect=self._filaments)
         respx.put(f"{BASE}/config").mock(side_effect=self._put)
         respx.post(f"{BASE}/preset/save").mock(side_effect=self._save)
+
+    def _status(self, request):
+        if self.status_error_after_put and any(w[0] == "put" for w in self.writes):
+            return httpx.Response(500, json={"error": self.status_error_after_put})
+        return httpx.Response(200, json={
+            "presets": {"print": self.selected["print"], "printer": self.selected["printer"],
+                        "filaments": list(self.selected["filament"])},
+            "modified": {"print": [], "printer": [], "filament": self._edited_keys()} | self.modified})
 
     def _edited_keys(self) -> list:
         saved = self.presets.get(self.edited_from, {}) if self.edited_from else {}
@@ -387,7 +393,8 @@ async def test_a_refused_reselect_after_the_rollback_is_reported(both):
     row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
     assert row["error"] == "write_failed" and row["edits_discarded"] is False
     assert row["still_modified"] == ["filament_cooling_final_speed"]
-    assert "select_cancelled" in row["discard_error"] and "hint" in row
+    assert "select_cancelled" in row["discard_error"]["select"] and "hint" in row
+    assert "restore" not in row["discard_error"] and "status_error" not in row
     assert pc.presets[NAME] == PC
 
 
@@ -413,6 +420,42 @@ async def test_a_failed_rollback_is_still_dropped_by_selecting_the_preset_again(
     row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
     assert row["error"] == "write_failed" and row["edits_discarded"] is True
     assert "discard_error" not in row and pc.edited == PC
+
+
+@respx.mock
+async def test_both_failed_discard_steps_are_reported(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected=NAME)
+    _failed_save_with_a_new_key(pc)
+    pc.put_failures_after = 1
+    pc.select_error = "select_cancelled"
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "write_failed" and row["edits_discarded"] is False
+    assert set(row["discard_error"]) == {"restore", "select"}
+    assert "select_cancelled" in row["discard_error"]["select"] and "hint" in row
+    assert pc.presets[NAME] == PC
+
+
+@respx.mock
+async def test_a_failed_status_after_the_discard_is_reported_apart_from_earlier_steps(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected=NAME)
+    _failed_save_with_a_new_key(pc)
+    pc.put_failures_after = 1
+    pc.status_error_after_put = "status_down"
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "write_failed" and row["edits_discarded"] is False
+    assert "status_down" in row["status_error"] and "hint" in row
+    assert list(row["discard_error"]) == ["restore"] and "status_down" not in row["discard_error"]["restore"]
+    assert pc.edited == PC
+
+
+@respx.mock
+async def test_a_failed_status_after_a_clean_discard_has_no_discard_error(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected=NAME)
+    _failed_save_with_a_new_key(pc)
+    pc.status_error_after_put = "status_down"
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["edits_discarded"] is False and "status_down" in row["status_error"]
+    assert "discard_error" not in row and "hint" in row
 
 
 @respx.mock
