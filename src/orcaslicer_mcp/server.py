@@ -1506,6 +1506,43 @@ def _calibration_err(e: ApiError) -> dict:
     return out
 
 
+_CALIBRATION_EDIT_GROUPS = ("print", "filament")
+_CALIBRATION_EDITS_DETAIL = (
+    "The test wrote these keys as unsaved edits of the active presets, as OrcaSlicer's Calibration menu does, "
+    "and they stay after the test project is discarded (new_project keeps them). When the test is done, put them "
+    "back with set_config {key: null} (filament keys with filament_slot), or the next slice keeps the test's values.")
+_CALIBRATION_EDITS_UNCHECKED = (
+    "get_status failed after the test was created, so which preset keys it left as unsaved edits is unknown; "
+    "check get_status and put the test's edits back with set_config {key: null} when the test is done.")
+
+
+async def _modified_keys(c) -> dict | None:
+    """The unsaved preset edits get_status lists, by group; None when it cannot be read."""
+    try:
+        modified = (await c.get_status()).get("modified")
+    except ApiError:
+        return None
+    if not isinstance(modified, dict):
+        return None
+    return {g: _visible_keys(modified.get(g) if isinstance(modified.get(g), list) else [])
+            for g in _CALIBRATION_EDIT_GROUPS}
+
+
+def _add_preset_edits(out: dict, before: dict | None, after: dict | None) -> None:
+    if after is None:
+        out["preset_edits_detail"] = _CALIBRATION_EDITS_UNCHECKED
+        return
+    edits = {}
+    for group in _CALIBRATION_EDIT_GROUPS:
+        earlier = set((before or {}).get(group) or [])
+        new = [k for k in after.get(group) or [] if k not in earlier]
+        if new:
+            edits[group] = new
+    if edits:
+        out["preset_edits"] = edits
+        out["preset_edits_detail"] = _CALIBRATION_EDITS_DETAIL
+
+
 @mcp.tool()
 async def create_calibration(
     type: str,
@@ -1531,7 +1568,14 @@ async def create_calibration(
     (try again later) and unsupported_on_belt (pa_line and pa_pattern do not exist for a belt
     printer; use pa_tower). not_created means the test added no objects; with
     project_replaced true the previous project is already gone, so tell the user to look
-    for its restore point in the OrcaSlicer MCP panel."""
+    for its restore point in the OrcaSlicer MCP panel.
+
+    Like the Calibration menu, the generator writes some settings (pa_tower: inner_wall_speed,
+    outer_wall_speed, slow_down_layer_time) as unsaved edits of the active print and filament
+    presets, and they outlive the test project: new_project keeps them (kept_changes).
+    `preset_edits` lists the keys this call left modified, {print: [...], filament: [...]};
+    when the test is done, put them back with set_config {key: null} (filament keys with
+    filament_slot) or the user's next slice keeps the test's values."""
     body: dict = {"type": type, "discard_unsaved": discard_unsaved}
     if type == "flow_rate":
         body |= {"pass": flow_pass, "linear": linear}
@@ -1539,6 +1583,7 @@ async def create_calibration(
         body |= {"start": start, "end": end, "step": step}
     try:
         async with _client() as c:
+            before = await _modified_keys(c)
             out = await c.create_calibration(body)
             if tool is not None:
                 assigned = []
@@ -1547,6 +1592,7 @@ async def create_calibration(
                     assigned.append(obj["id"])
                 out["tool"] = tool
                 out["assigned_objects"] = assigned
+            _add_preset_edits(out, before, await _modified_keys(c))
             return out
     except ApiError as e:
         return _calibration_err(e)

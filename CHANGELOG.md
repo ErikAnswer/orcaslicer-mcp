@@ -24,6 +24,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 - `glama.json`, which named the upstream maintainer for a listing this fork does not have.
 
 ### Added
+- `create_calibration` says which preset keys the test left as unsaved edits: `preset_edits` lists them by preset, `{print: [...], filament: [...]}` (for `pa_tower`, `inner_wall_speed` and `outer_wall_speed` of the print preset and `slow_down_layer_time` of the filament), only the ones that were not already modified before the call, and `preset_edits_detail` says that they outlive the test project (`new_project` keeps them under `kept_changes`) and how to put them back with `set_config` and `null`, so the next slice does not keep the test's speeds. When `get_status` fails after the test, `preset_edits_detail` says the edits are unknown.
 - `docs/fork.md` says what still names upstream and why, and `tests/test_fork_not_published.py` fails if a merge from upstream brings its publishing scripts or workflows back.
 
 ## [0.1.25-erik.1] - 2026-11-15
