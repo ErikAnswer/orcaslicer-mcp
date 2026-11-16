@@ -1505,7 +1505,17 @@ def _queue_known_ids(queue: dict) -> set[str]:
 
 
 def _queue_unidentified(queue: dict) -> Counter:
-    return Counter((j.get("filename"), j.get("createdAt")) for j in _queue_pending(queue) if not j.get("id"))
+    return Counter(
+        (str(j.get("filename")), _queue_created_at(j)) for j in _queue_pending(queue) if not j.get("id"))
+
+
+def _queue_created_at(job: dict) -> str | None:
+    created_at = job.get("createdAt")
+    return created_at if isinstance(created_at, str) and created_at else None
+
+
+def _queue_undated(unidentified: Counter) -> int:
+    return sum(count for key, count in unidentified.items() if not key[1])
 
 
 def _queue_unrecognised(unidentified: Counter, before: Counter) -> int:
@@ -1531,6 +1541,7 @@ class QueueSnapshot:
 class NewQueueJobs:
     identified: list[dict]
     unidentified: int
+    undated: int
     pending_without_id: int
 
     @property
@@ -1541,7 +1552,7 @@ class NewQueueJobs:
 
 
 async def _find_new_queue_job(g: GestorClient, before: QueueSnapshot) -> NewQueueJobs:
-    found = NewQueueJobs([], 0, 0)
+    found = NewQueueJobs([], 0, 0, 0)
     for attempt in range(QUEUE_CONFIRM_ATTEMPTS):
         if attempt:
             await asyncio.sleep(QUEUE_CONFIRM_DELAY_S)
@@ -1550,6 +1561,7 @@ async def _find_new_queue_job(g: GestorClient, before: QueueSnapshot) -> NewQueu
         found = NewQueueJobs(
             [j for j in _queue_pending(queue) if j.get("id") and j["id"] not in before.known_ids],
             _queue_unrecognised(unidentified, before.unidentified),
+            _queue_undated(unidentified),
             unidentified.total(),
         )
         if found.identified:
@@ -1598,6 +1610,9 @@ async def _confirm_queue_job(g: GestorClient, before: QueueSnapshot, hold: bool)
         elif found.identified:
             detail = (f"a new job with an id appeared together with {found.unidentified} pending job(s) without an id "
                       "that were not there, or cannot be recognised, before sending; not guessing which one is this plate")
+            if found.undated:
+                detail += (f". {found.undated} of them have no createdAt either: no send can be confirmed "
+                           "while they stay pending in the queue")
         elif found.pending_without_id:
             detail = (f"no new job with an id showed up; {found.pending_without_id} pending job(s) have no id, "
                       "so this plate cannot be identified")

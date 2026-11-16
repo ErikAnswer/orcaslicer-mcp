@@ -375,6 +375,25 @@ def test_unidentified_counts_pending_jobs_without_id_by_filename_and_date():
 
 
 @respx.mock
+async def test_job_without_id_with_unhashable_fields_keeps_the_sent_answer():
+    odd = {"filename": ["cube"], "status": "queued", "createdAt": {"$date": 1}}
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([odd]), _state([odd, NEW])])
+    _orca_ok()
+    out = await srv.send_to_queue()
+    assert out["sent"] is True and out["queue_confirmed"] is False
+    assert "1 of them have no createdAt either" in out["queue_detail"]
+
+
+@respx.mock
+async def test_dated_new_job_without_id_does_not_mention_undated_ones():
+    anon = {"filename": "cube.gcode.3mf", "status": "queued", "createdAt": "2026-11-16T06:00:00Z"}
+    respx.get(f"{GESTOR}/api/state").mock(side_effect=[_state([]), _state([anon, NEW])])
+    _orca_ok()
+    out = await srv.send_to_queue()
+    assert out["queue_confirmed"] is False and "createdAt" not in out["queue_detail"]
+
+
+@respx.mock
 async def test_undated_job_without_id_replaced_by_a_twin_next_to_a_new_one_with_id_is_ambiguous():
     printing = {"filename": "cube.gcode.3mf", "status": "printing"}
     sent = {"filename": "cube.gcode.3mf", "status": "queued"}
