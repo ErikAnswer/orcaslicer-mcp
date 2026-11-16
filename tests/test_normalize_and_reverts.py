@@ -148,7 +148,7 @@ async def test_null_that_leaves_the_key_modified_is_reported_as_not_reverted():
         "applied": ["layer_height", "wall_loops"], "errors": {}}))
     out = await srv.set_config({"layer_height": None, "wall_loops": None})
     assert out["not_reverted"] == ["layer_height"] and out["reverted"] == ["wall_loops"]
-    assert "set the value you want" in out["detail"]
+    assert "Set the value you want" in out["detail"]
 
 
 @respx.mock
@@ -181,7 +181,7 @@ async def test_apply_and_slice_passes_on_a_null_that_was_not_reverted(monkeypatc
         "state": "done", "percent": 100, "message": "", "stats": {"total_cost": 0.1}, "warnings": []}))
     out = await srv.apply_and_slice({"layer_height": None})
     assert out["not_reverted"] == ["layer_height"] and "reverted" not in out
-    assert "set the value you want" in out["detail"] and out["result"]["state"] == "done"
+    assert "Set the value you want" in out["detail"] and out["result"]["state"] == "done"
 
 
 @respx.mock
