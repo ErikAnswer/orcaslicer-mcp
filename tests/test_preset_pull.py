@@ -510,6 +510,91 @@ def test_the_per_variant_set_holds_only_vector_options_the_schema_knows():
     assert unknown == set()
 
 
+def test_machine_limit_pairs_match_the_per_variant_vectors_of_orcaslicer_2_5():
+    pair = ["30000", "20000"]
+    assert ps.same_value("machine_max_acceleration_x", "30000,20000,30000,30000,30000,30000,30000,30000",
+                         pair, per_variant=True)
+    assert ps.same_value("machine_max_acceleration_x", pair, "30000,20000,30000,20000", per_variant=True)
+    assert ps.same_value("machine_max_junction_deviation", "0,0,0,0,0,0,0,0", ["0", "0"], per_variant=True)
+    assert not ps.same_value("machine_max_acceleration_x", "30000,20000,30000,30000", pair)
+    assert not ps.same_value("machine_max_acceleration_x", "30000,20000,20000,20000", pair, per_variant=True)
+    assert not ps.same_value("machine_max_acceleration_x", "30000,20000,30000,20000,30000,30000", pair,
+                             per_variant=True)
+    assert not ps.same_value("machine_max_acceleration_x", "30000,25000,30000,30000", pair, per_variant=True)
+    assert not ps.same_value("machine_max_acceleration_x", "30000,20000,30000", pair, per_variant=True)
+    assert not ps.same_value("machine_max_acceleration_x", "30000,30000,30000,30000", ["30000"],
+                             per_variant=True)
+    assert not ps.same_value("machine_max_acceleration_x", "", pair, per_variant=True)
+
+
+def test_hotend_rates_match_the_per_variant_vectors_of_orcaslicer_2_5():
+    assert ps.same_value("hotend_heating_rate", "2,2,2,2", ["2"], per_variant=True)
+    assert ps.same_value("hotend_cooling_rate", ["2"], "2,2,2,2", per_variant=True)
+    assert not ps.same_value("hotend_heating_rate", "2,2,2,2", ["2"])
+    assert not ps.same_value("hotend_heating_rate", "2,3,2,2", ["2"], per_variant=True)
+    assert not ps.same_value("hotend_heating_rate", "2,2,2,2", ["2", "2"], per_variant=True)
+
+
+def test_other_printer_vectors_keep_their_length_strict_with_per_variant():
+    assert not ps.same_value("nozzle_diameter", "0.4,0.4,0.4,0.4", ["0.4"], per_variant=True)
+    assert not ps.same_value("retraction_length", "0.8,0.8,0.8,0.8", ["0.8"], per_variant=True)
+    assert not ps.same_value("printable_area", "0x0,256x0,0x0,256x0", ["0x0", "256x0"], per_variant=True)
+    assert ps.fit_to_current("nozzle_diameter", ["0.4"], ["0.4"] * 4, per_variant=True) == ["0.4"]
+
+
+def test_the_printer_per_variant_sets_hold_only_float_vectors():
+    keys = ps._PER_VARIANT_PAIR_KEYS | ps._PER_VARIANT_PRINTER_KEYS
+    assert len(ps._PER_VARIANT_PAIR_KEYS) == 16
+    assert {key for key in keys if ps.option_type(key) != "coFloats"} == set()
+    assert keys.isdisjoint(ps._PER_VARIANT_KEYS)
+
+
+MACHINE_PARENT = {"inherits": "", "printer_settings_id": "Base", "nozzle_diameter": "0.4,0.4,0.4,0.4",
+                  "machine_max_speed_x": "600,600,600,600,600,600,600,600",
+                  "machine_max_acceleration_x": "20000,20000,20000,20000,20000,20000,20000,20000",
+                  "hotend_heating_rate": "2,2,2,2"}
+MACHINE_PC = MACHINE_PARENT | {"inherits": "Base", "printer_settings_id": "Queue",
+                               "machine_max_acceleration_x": "30000,20000,30000,30000,30000,30000,30000,30000",
+                               "extruder_nozzle_stats": "Standard#1;Standard#1;Standard#1;Standard#1",
+                               "support_chamber_temp_control": "1"}
+MACHINE_FILE = {"from": "User", "inherits": "Base", "name": "Queue", "printer_settings_id": "Queue",
+                "nozzle_diameter": ["0.4", "0.4", "0.4", "0.4"], "machine_max_speed_x": ["600", "600"],
+                "machine_max_acceleration_x": ["30000", "20000"], "hotend_heating_rate": ["2"],
+                "silent_mode": "0", "support_chamber_temp_control": "0"}
+
+
+def test_printer_compare_reports_only_the_real_differences_against_a_2_4_copy():
+    comparison = ps.compare(MACHINE_PC, MACHINE_FILE, MACHINE_PARENT, per_variant=True)
+    assert {d.key for d in comparison.differences} == {"support_chamber_temp_control"}
+    strict = ps.compare(MACHINE_PC, MACHINE_FILE, MACHINE_PARENT)
+    assert {d.key for d in strict.differences} == {
+        "support_chamber_temp_control", "machine_max_speed_x", "machine_max_acceleration_x",
+        "hotend_heating_rate", "silent_mode", "extruder_nozzle_stats"}
+
+
+def test_keys_of_one_version_are_still_compared_when_both_sides_hold_them():
+    assert ps.only_in_one_version("silent_mode", None, "0", per_variant=True)
+    assert ps.only_in_one_version("extruder_nozzle_stats", ["Standard#1"], None, per_variant=True)
+    assert not ps.only_in_one_version("silent_mode", None, "0")
+    assert not ps.only_in_one_version("silent_mode", "1", "0", per_variant=True)
+    assert not ps.only_in_one_version("silent_mode", None, None, per_variant=True)
+    assert not ps.only_in_one_version("support_chamber_temp_control", None, "0", per_variant=True)
+    pc = MACHINE_PC | {"silent_mode": "1"}
+    assert "silent_mode" in {d.key for d in ps.compare(pc, MACHINE_FILE, MACHINE_PARENT, per_variant=True).differences}
+
+
+def test_printer_target_changes_skip_the_format_keys_and_keep_the_slicer_length():
+    assert ps.target_changes(MACHINE_FILE, MACHINE_PC, MACHINE_PARENT, per_variant=True) == {
+        "support_chamber_temp_control": "0"}
+    file = MACHINE_FILE | {"machine_max_acceleration_x": ["25000", "15000"], "hotend_heating_rate": ["3"]}
+    assert ps.target_changes(file, MACHINE_PC, MACHINE_PARENT, per_variant=True) == {
+        "support_chamber_temp_control": "0",
+        "machine_max_acceleration_x": "25000,15000,25000,15000,25000,15000,25000,15000",
+        "hotend_heating_rate": "3,3,3,3"}
+    assert ps.fit_to_current("machine_max_speed_x", ["600"], ["600"] * 8, per_variant=True) == ["600"]
+    assert ps.fit_to_current("machine_max_speed_x", ["500", "400"], ["600"] * 8) == ["500", "400"]
+
+
 def test_printer_and_print_vectors_keep_their_length_strict():
     assert not ps.same_value("nozzle_diameter", "0.4,0.4", ["0.4"])
     assert ps.fit_to_current("nozzle_diameter", ["0.4"], ["0.4", "0.4"]) == ["0.4"]
