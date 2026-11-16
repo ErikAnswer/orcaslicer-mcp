@@ -103,6 +103,14 @@ CLIENT_HEADER = "X-OrcaSlicer-MCP-Client"
 CLIENT_NAME: list = [None]
 
 
+def _project_file_path(path: str, name: str) -> str:
+    # Fork builds up to erik-v2.5.0-mcp.17 send the status path without its extension
+    # (folder + project name), while get_project and list_projects give the .3mf file.
+    if path and name and path.replace("\\", "/").rsplit("/", 1)[-1] == name:
+        return path + ".3mf"
+    return path
+
+
 class OrcaClient:
     def __init__(self, cfg: Config):
         self._cfg = cfg
@@ -175,8 +183,9 @@ class OrcaClient:
         # `project`. Fold the three into one object so a caller sees name, path and
         # dirty together; an older build keeps `project` as the bare path string.
         if "project_dirty" in data:
-            data["project"] = {"name": data.pop("project_name", ""),
-                               "path": data.get("project") or "",
+            name = data.pop("project_name", "")
+            data["project"] = {"name": name,
+                               "path": _project_file_path(data.get("project") or "", name),
                                "dirty": bool(data.pop("project_dirty"))}
         return data
 

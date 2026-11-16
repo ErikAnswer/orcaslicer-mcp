@@ -1,5 +1,5 @@
 import json
-import httpx, respx
+import httpx, pytest, respx
 import orcaslicer_mcp.server as srv
 from orcaslicer_mcp.client import OrcaClient
 from orcaslicer_mcp.config import load_config
@@ -47,6 +47,25 @@ async def test_get_status_unsaved_project_has_empty_path(monkeypatch):
     async with OrcaClient(load_config()) as c:
         out = await c.get_status()
     assert out["project"] == {"name": "Untitled", "path": "", "dirty": False}
+
+
+@pytest.mark.parametrize("sent, name, expected", [
+    ("C:\\Users\\e\\Documents\\OrcaSlicer MCP\\prueba-484", "prueba-484",
+     "C:\\Users\\e\\Documents\\OrcaSlicer MCP\\prueba-484.3mf"),
+    ("/u/prueba-484", "prueba-484", "/u/prueba-484.3mf"),
+    ("/u/prueba-484.3mf", "prueba-484", "/u/prueba-484.3mf"),
+    ("/u/part.3mf", "part.3mf", "/u/part.3mf.3mf"),
+    ("/u/part.3mf.3mf", "part.3mf", "/u/part.3mf.3mf"),
+    ("", "Untitled", ""),
+])
+@respx.mock
+async def test_get_status_project_path_is_the_3mf_file(monkeypatch, sent, name, expected):
+    _env(monkeypatch)
+    respx.get("http://x:13130/api/v1/status").mock(return_value=httpx.Response(200, json={
+        "app": "OrcaSlicer", "project": sent, "project_name": name, "project_dirty": False}))
+    async with OrcaClient(load_config()) as c:
+        out = await c.get_status()
+    assert out["project"]["path"] == expected
 
 
 # --- get_project -----------------------------------------------------------------------
