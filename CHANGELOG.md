@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Fixed
+- `send_to_queue` no longer confirms a new job with an id when a pending job without an id appeared in the same reading: it returns `queue_confirmed: false` with the job under `candidates` and, with `hold`, holds nothing.
+
 ### Removed
 - `glama.json`, which named the upstream maintainer for a listing this fork does not have.
 

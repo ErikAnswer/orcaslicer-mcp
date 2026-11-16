@@ -9,6 +9,8 @@ import re
 import datetime
 import sys
 import uuid
+from collections import Counter
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 from mcp.server.mcpserver import MCPServer, Image, Context
@@ -1502,24 +1504,52 @@ def _queue_known_ids(queue: dict) -> set[str]:
     return {j["id"] for j in _queue_pending(queue) + list(queue.get("history") or []) if j.get("id")}
 
 
+def _queue_unidentified(queue: dict) -> Counter:
+    return Counter((j.get("filename"), j.get("createdAt")) for j in _queue_pending(queue) if not j.get("id"))
+
+
 def _queue_job_summary(job: dict) -> dict:
     return {k: job.get(k) for k in ("id", "filename", "status", "position", "createdAt")}
 
 
-async def _find_new_queue_job(g: GestorClient, before: set[str]) -> tuple[dict | None, list[dict], int]:
-    new: list[dict] = []
-    without_id = 0
+@dataclass(frozen=True)
+class QueueSnapshot:
+    known_ids: set[str]
+    unidentified: Counter
+
+    @classmethod
+    def of(cls, queue: dict) -> "QueueSnapshot":
+        return cls(_queue_known_ids(queue), _queue_unidentified(queue))
+
+
+@dataclass(frozen=True)
+class NewQueueJobs:
+    identified: list[dict]
+    unidentified: int
+    pending_without_id: int
+
+    @property
+    def job(self) -> dict | None:
+        if len(self.identified) == 1 and not self.unidentified:
+            return self.identified[0]
+        return None
+
+
+async def _find_new_queue_job(g: GestorClient, before: QueueSnapshot) -> NewQueueJobs:
+    found = NewQueueJobs([], 0, 0)
     for attempt in range(QUEUE_CONFIRM_ATTEMPTS):
         if attempt:
             await asyncio.sleep(QUEUE_CONFIRM_DELAY_S)
-        pending = _queue_pending(await g.queue())
-        without_id = sum(1 for j in pending if not j.get("id"))
-        new = [j for j in pending if j.get("id") and j["id"] not in before]
-        if len(new) == 1:
-            return new[0], new, without_id
-        if new:
+        queue = await g.queue()
+        unidentified = _queue_unidentified(queue)
+        found = NewQueueJobs(
+            [j for j in _queue_pending(queue) if j.get("id") and j["id"] not in before.known_ids],
+            (unidentified - before.unidentified).total(),
+            unidentified.total(),
+        )
+        if found.identified:
             break
-    return None, new, without_id
+    return found
 
 
 class HoldUnverified(Exception):
@@ -1550,22 +1580,27 @@ async def _hold_queue_job(g: GestorClient, job: dict) -> dict:
     raise GestorError(f"the job left the queue before it could be held{request_error}")
 
 
-async def _confirm_queue_job(g: GestorClient, before: set[str], hold: bool) -> dict:
+async def _confirm_queue_job(g: GestorClient, before: QueueSnapshot, hold: bool) -> dict:
     try:
-        job, new, without_id = await _find_new_queue_job(g, before)
+        found = await _find_new_queue_job(g, before)
     except GestorError as e:
         out = {"queue_confirmed": False, "queue_detail": f"could not read the queue: {e}"}
         return out | ({"held": False} if hold else {})
+    job = found.job
     if job is None:
-        if new:
+        if len(found.identified) > 1:
             detail = "several new jobs appeared at once; not guessing which one is this plate"
-        elif without_id:
-            detail = f"no new job with an id showed up; {without_id} pending job(s) have no id, so this plate cannot be identified"
+        elif found.identified:
+            detail = (f"a new job with an id appeared together with {found.unidentified} new pending job(s) "
+                      "without an id; not guessing which one is this plate")
+        elif found.pending_without_id:
+            detail = (f"no new job with an id showed up; {found.pending_without_id} pending job(s) have no id, "
+                      "so this plate cannot be identified")
         else:
             detail = "the job did not show up in the queue"
         out = {"queue_confirmed": False, "queue_detail": detail}
-        if new:
-            out["candidates"] = [_queue_job_summary(j) for j in new]
+        if found.identified:
+            out["candidates"] = [_queue_job_summary(j) for j in found.identified]
         return out | ({"held": False} if hold else {})
     out = {"queue_confirmed": True, "job": _queue_job_summary(job)}
     if hold:
@@ -1601,7 +1636,7 @@ async def send_to_queue(
         return await _send_unconfirmed(f"invalid Gestor 3D settings: {e}")
     async with GestorClient(gestor_cfg) as g:
         try:
-            before = _queue_known_ids(await g.queue())
+            before = QueueSnapshot.of(await g.queue())
         except GestorError as e:
             if hold:
                 return {"error": "gestor_unreachable", "detail": f"{e}; nothing was sent, so it cannot be held"}
