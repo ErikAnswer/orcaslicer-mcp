@@ -5,6 +5,14 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Removed
+- `glama.json`, which named the upstream maintainer for a listing this fork does not have.
+
+### Added
+- `docs/fork.md` says what still names upstream and why, and `tests/test_fork_not_published.py` fails if a merge from upstream brings its publishing scripts or workflows back.
+
 ## [0.1.25-erik.1] - 2026-11-15
 Our fork (ErikAnswer) on top of orcaslicer-mcp 0.1.25; the package version stays 0.1.25 and the -erik.N suffix lives only in the git tag, as with 0.1.17-erik.N. Every route the 0.1.18-0.1.25 tools use (filament slots, Bambu Lab reads, the 2.5 temperature check) is in the fork build `erik-v2.5.0-mcp.16`, which carries all of MaxEllis's remote-api-250 (his v2.5.0-mcp.18).
 
