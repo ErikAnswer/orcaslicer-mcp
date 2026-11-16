@@ -1482,6 +1482,29 @@ async def list_objects() -> dict:
         return _m4b_err(e)
 
 
+_CALIBRATION_REPLACED = ("the calibration test created no objects and the previous project was already "
+                         "replaced; look for its restore point in the OrcaSlicer MCP panel")
+
+
+def _calibration_err(e: ApiError) -> dict:
+    out = _err(e)
+    body = getattr(e, "body", None) or {}
+    if body.get("error") != "not_created":
+        return out
+    replaced = body.get("project_replaced")
+    detail = body.get("detail") if isinstance(body.get("detail"), str) else ""
+    if not isinstance(replaced, bool):
+        out["project_replaced"] = True
+        out["detail"] = "; ".join(t for t in (detail.strip(), _CALIBRATION_REPLACED) if t)
+        return out
+    out["project_replaced"] = replaced
+    if detail.strip():
+        out["detail"] = detail
+    elif replaced:
+        out["detail"] = _CALIBRATION_REPLACED
+    return out
+
+
 @mcp.tool()
 async def create_calibration(
     type: str,
@@ -1503,7 +1526,11 @@ async def create_calibration(
     every test object to that extruder/head. On multi-tool printers the generator writes its
     filament overrides to the filament OPEN in the Filament tab, so select_preset that filament
     first. Afterwards slice_and_wait and check get_gcode (tool changes, temperatures, PA
-    commands) before send_to_queue."""
+    commands) before send_to_queue. Refusals that change nothing: slicing, busy, job_running
+    (try again later) and unsupported_on_belt (pa_line and pa_pattern do not exist for a belt
+    printer; use pa_tower). not_created means the test added no objects; with
+    project_replaced true the previous project is already gone, so tell the user to look
+    for its restore point in the OrcaSlicer MCP panel."""
     body: dict = {"type": type, "discard_unsaved": discard_unsaved}
     if type == "flow_rate":
         body |= {"pass": flow_pass, "linear": linear}
@@ -1521,7 +1548,7 @@ async def create_calibration(
                 out["assigned_objects"] = assigned
             return out
     except ApiError as e:
-        return _err(e)
+        return _calibration_err(e)
 
 
 QUEUE_CONFIRM_ATTEMPTS = 5
