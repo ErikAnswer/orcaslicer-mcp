@@ -140,6 +140,28 @@ async def test_set_config_slot_null_reverts_to_that_slots_preset(monkeypatch):
     assert out["reverted"] == ["hot_plate_temp"] and out["slot"] == 2
 
 
+@respx.mock
+async def test_set_config_slot_null_is_not_checked_again_after_the_write(monkeypatch):
+    _env(monkeypatch)
+    # The slot's key stays listed as modified after the write, as on a build without the saved-preset fix. With
+    # filament_slot the status is read twice (capability, then the edits to put back) and never a third time.
+    status = respx.get(f"{URL}/api/v1/status").mock(return_value=httpx.Response(200, json={
+        "app": "OrcaSlicer", "capabilities": ["config", "filament_slots"],
+        "presets": {"filaments": ["Generic ASA", "Generic PLA"]},
+        "modified": {"filament": ["hot_plate_temp#1"]}}))
+    respx.get(f"{URL}/api/v1/filaments").mock(return_value=httpx.Response(200, json={
+        "count": 2, "filaments": [{"index": 0, "preset": "Generic ASA", "open_in_tab": False},
+                                  {"index": 1, "preset": "Generic PLA", "open_in_tab": True, "modified": True}],
+        "tab": {"preset": "Generic PLA", "slot": 1, "modified": True}}))
+    respx.post(f"{URL}/api/v1/preset/config").mock(
+        return_value=httpx.Response(200, json={"config": {"hot_plate_temp": "60"}}))
+    respx.put(f"{URL}/api/v1/config").mock(
+        return_value=httpx.Response(200, json={"applied": ["hot_plate_temp"], "errors": {}, "slot": 1, "preset": "Generic PLA"}))
+    out = await srv.set_config({"hot_plate_temp": None}, filament_slot=2)
+    assert status.call_count == 2
+    assert out["reverted"] == ["hot_plate_temp"] and "not_reverted" not in out and "detail" not in out
+
+
 # --- save_preset(filament_slot=) -------------------------------------------------------
 
 @respx.mock
