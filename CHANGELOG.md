@@ -8,6 +8,7 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ## [Unreleased]
 
 ### Fixed
+- `get_status` gives `project.path` with its `.3mf` extension, the same file path as `get_project` and `list_projects`. OrcaSlicer MCP builds up to `erik-v2.5.0-mcp.17` send it without the extension; the slicer side is fixed in the fork by `fix(remote-api): give the project path with its .3mf extension in status and project.opened` (ErikAnswer/OrcaSlicer, branch `fix/970-status-project-path-3mf`).
 - `open_project` refused for unsaved project changes now names its own argument: the `detail` says to `save_project` first or pass `discard_unsaved=True`, instead of repeating OrcaSlicer's `if_unsaved` hint, which only `new_project` takes.
 - `set_config` with a key set to `null` checks afterwards that the unsaved edit is gone: a key OrcaSlicer still lists as modified comes back under `not_reverted` with a `detail`, instead of `reverted`. OrcaSlicer MCP builds up to `erik-v2.5.0-mcp.17` report the edited value of the selected preset as its saved one, so there the edit stayed; the slicer side is fixed in the fork by `fix(remote-api): return the saved preset from POST /preset/config` (ErikAnswer/OrcaSlicer, branch `fix/968-preset-config-saved-values`).
 - Plugin: `get_preset_config` of the selected preset returns its saved values, not the unsaved edits, so `set_config` with `null` puts the key back.
