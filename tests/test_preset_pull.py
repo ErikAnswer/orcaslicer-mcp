@@ -36,6 +36,8 @@ class FakeOrca:
         self.edited: dict = {}
         self.edited_from: str | None = None
         self.put_errors: dict = {}
+        self.reselect_keeps_edits = False
+        self.select_error: str | None = None
         self.writes: list = []
 
     def install(self):
@@ -68,6 +70,10 @@ class FakeOrca:
     def _select(self, request):
         body = json.loads(request.read())
         self.writes.append(("select", body))
+        if self._edited_keys() and self.select_error:
+            return httpx.Response(500, json={"error": self.select_error})
+        if self._edited_keys() and self.reselect_keeps_edits:
+            return httpx.Response(200, json={"selected": body["name"]})
         if "slot" in body:
             self.selected["filament"][body["slot"]] = body["name"]
         else:
@@ -326,16 +332,43 @@ async def test_refused_keys_are_reported_and_the_rest_put_back(both):
     assert pc.edited == PC and pc.presets[NAME] == PC
 
 
-@respx.mock
-async def test_a_new_key_left_after_the_rollback_is_reported(both):
-    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected=NAME)
+def _failed_save_with_a_new_key(pc):
     pc.install()
     respx.post(f"{BASE}/preset/save").mock(return_value=httpx.Response(
         409, json={"error": "temperature_pairs_unsafe"}))
     _gestor(GESTOR_FILE | {"filament_cooling_final_speed": ["3.4"]})
+
+
+@respx.mock
+async def test_a_new_key_left_after_the_rollback_is_dropped_by_selecting_the_preset_again(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected=NAME)
+    _failed_save_with_a_new_key(pc)
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "write_failed" and row["edits_discarded"] is True
+    assert "still_modified" not in row and "hint" not in row
+    assert [w for w in pc.writes if w[0] == "select"] == [("select", {"type": "filament", "name": NAME})] * 2
+    assert pc.edited == PC and pc.presets[NAME] == PC and pc.tab == NAME
+
+
+@respx.mock
+async def test_a_new_key_that_selecting_again_does_not_drop_is_reported(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected=NAME)
+    _failed_save_with_a_new_key(pc)
+    pc.reselect_keeps_edits = True
     row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
     assert row["error"] == "write_failed" and row["edits_discarded"] is False
     assert row["still_modified"] == ["filament_cooling_final_speed"] and "hint" in row
+    assert pc.presets[NAME] == PC
+
+
+@respx.mock
+async def test_a_refused_reselect_after_the_rollback_is_reported(both):
+    pc = FakeOrca({NAME: PC, BASE_NAME: PARENT}, selected=NAME)
+    _failed_save_with_a_new_key(pc)
+    pc.select_error = "select_cancelled"
+    row = (await srv.sync_presets("gestor_to_pc", [NAME], dry_run=False))["presets"][0]
+    assert row["error"] == "write_failed" and row["edits_discarded"] is False
+    assert "select_cancelled" in row["discard_error"] and "hint" in row
     assert pc.presets[NAME] == PC
 
 

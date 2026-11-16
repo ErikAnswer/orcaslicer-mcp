@@ -3145,7 +3145,9 @@ async def _restore_selection(c, before: dict, filament_tab: str | None = None) -
 async def _apply_and_save(c, ptype: str, name: str, start_name: str, start: dict,
                           changes: dict) -> dict | None:
     """On failure the selected preset is put back to its stored values, so no half-applied
-    edits stay behind even when it is the preset that was already selected."""
+    edits stay behind even when it is the preset that was already selected. Keys the stored
+    preset does not have cannot be put back by value: selecting the preset again drops them,
+    which is safe because the pull refuses to start with unsaved edits in any group."""
     put = False
     try:
         await c.select_preset(ptype, start_name)
@@ -3164,6 +3166,9 @@ async def _apply_and_save(c, ptype: str, name: str, start_name: str, start: dict
         try:
             await c.restore_config({k: start[k] for k in changes if k in start})
             left = _unsaved_in(await c.get_status(), ptype, start_name)
+            if left:
+                await c.select_preset(ptype, start_name)
+                left = _unsaved_in(await c.get_status(), ptype, start_name)
         except ApiError as e:
             return failure | {"edits_discarded": False, "discard_error": str(e),
                               "hint": "discard the unsaved edits of this preset in OrcaSlicer"}
