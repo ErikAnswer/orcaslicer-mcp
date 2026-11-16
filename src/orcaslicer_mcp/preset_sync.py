@@ -198,31 +198,66 @@ _PER_VARIANT_KEYS = frozenset({
     "volumetric_speed_coefficients"})
 
 
+_PER_VARIANT_PRINTER_KEYS = frozenset({"hotend_cooling_rate", "hotend_heating_rate"})
+_PER_VARIANT_PAIR_KEYS = _MACHINE_LIMIT_KEYS | frozenset({
+    "machine_max_acceleration_extruding", "machine_max_acceleration_retracting",
+    "machine_max_acceleration_travel", "machine_max_junction_deviation"})
+_ONE_VERSION_KEYS = frozenset({"extruder_nozzle_stats", "silent_mode"})
+PER_VARIANT_TYPES = frozenset({"filament", "printer"})
+
+
 def same_value(key: str, a, b, per_variant: bool = False) -> bool:
-    """Equal as effective settings. OrcaSlicer 2.5 keeps the filament vectors of
-    filament_options_with_variant (PrintConfig.cpp, _PER_VARIANT_KEYS here) per extruder variant
-    where 2.4 kept one item, so for those keys one item matches a vector repeating it, and a
-    one-item variant list matches a variant list it starts."""
+    """Equal as effective settings. OrcaSlicer 2.5 keeps per extruder variant what 2.4 kept
+    once, so with per_variant the short form of 2.4 matches the long one of 2.5 for three
+    explicit sets of keys (PrintConfig.cpp): the filament vectors of
+    filament_options_with_variant (_PER_VARIANT_KEYS) and the hotend rates of
+    printer_options_with_variant_1, where one item matches a vector repeating it (a one-item
+    variant list matches a variant list it starts); and the machine limits of
+    printer_options_with_variant_2, where the normal,silent pair matches a vector that starts
+    with it and goes on repeating the pair or its first value, the two ways 2.5 fills them."""
     ca, cb = canonical(key, a), canonical(key, b)
     if ca == cb:
         return True
-    if not (per_variant and key in _PER_VARIANT_KEYS):
+    if not per_variant or not (isinstance(ca, tuple) and isinstance(cb, tuple)):
         return False
-    if not (isinstance(ca, tuple) and isinstance(cb, tuple)) or 1 not in (len(ca), len(cb)):
-        return False
-    one, many = (ca, cb) if len(ca) == 1 else (cb, ca)
-    if not many:
+    short, long = sorted((ca, cb), key=len)
+    if key in _PER_VARIANT_PAIR_KEYS:
+        return _pair_fills(short, long)
+    if key not in _PER_VARIANT_KEYS | _PER_VARIANT_PRINTER_KEYS or len(short) != 1 or not long:
         return False
     if key == _VARIANT_KEY:
-        return many[0] == one[0]
-    return all(item == one[0] for item in many)
+        return long[0] == short[0]
+    return all(item == short[0] for item in long)
+
+
+def _pair_fills(pair: tuple, filled: tuple) -> bool:
+    if len(pair) != 2 or len(filled) <= 2 or len(filled) % 2:
+        return False
+    return filled[:2] == pair and (filled == pair * (len(filled) // 2)
+                                   or all(item == pair[0] for item in filled[2:]))
+
+
+def only_in_one_version(key: str, a, b, per_variant: bool = False) -> bool:
+    """A key OrcaSlicer 2.5 added or dropped, held by one side only: not a difference in the
+    settings, and nothing the other version can be given."""
+    return per_variant and key in _ONE_VERSION_KEYS and (a is None) != (b is None)
 
 
 def fit_to_current(key: str, target, current, per_variant: bool = False):
-    """A one-item file vector written over a per-variant vector keeps the slicer length."""
-    if (per_variant and key in _PER_VARIANT_KEYS and key != _VARIANT_KEY
-            and isinstance(target, list) and len(target) == 1
-            and isinstance(current, list) and len(current) > 1):
+    """A short file vector written over a per-variant vector keeps the slicer length, and a
+    machine limit pair the way the slicer vector is filled: with its first value when it is,
+    with the pair otherwise."""
+    if not (per_variant and isinstance(target, list) and isinstance(current, list)):
+        return target
+    if key in _PER_VARIANT_PAIR_KEYS:
+        if len(target) != 2 or len(current) <= 2 or len(current) % 2:
+            return target
+        repeats = len(current) // 2
+        first_value_fills = (current != current[:2] * repeats
+                             and all(item == current[0] for item in current[2:]))
+        return target + [target[0]] * (len(current) - 2) if first_value_fills else target * repeats
+    if (key in _PER_VARIANT_KEYS | _PER_VARIANT_PRINTER_KEYS and key != _VARIANT_KEY
+            and len(target) == 1 and len(current) > 1):
         return target * len(current)
     return target
 
@@ -288,6 +323,8 @@ def target_changes(gestor_file: dict, start_config: dict, parent_config: dict,
         else:
             continue
         current_value = None if current is None else from_api(key, current)
+        if only_in_one_version(key, target, current_value, per_variant):
+            continue
         if not same_value(key, target, current_value, per_variant):
             changes[key] = to_api(key, fit_to_current(key, target, current_value, per_variant))
     return changes
@@ -296,9 +333,10 @@ def target_changes(gestor_file: dict, start_config: dict, parent_config: dict,
 def compare(pc_config: dict, gestor_file: dict, gestor_parent: dict | None,
             per_variant: bool = False) -> Comparison:
     """Effective values on both sides: the PC's full config against the Gestor file laid over
-    its parent as read from the PC (system presets match; a 2.5 PC holds filament vectors per
-    extruder variant where the Gestor's 2.4 files hold one item, which same_value accepts
-    with per_variant, set for filament presets only).
+    its parent as read from the PC (system presets match; a 2.5 PC holds some filament and
+    printer vectors per extruder variant where the Gestor's 2.4 files hold one item or pair,
+    which same_value accepts with per_variant, set for filament and printer presets, and the
+    keys only one of the two versions has are left out).
     Without that parent only the keys the Gestor file states are compared."""
     result = Comparison(parent_known=gestor_parent is not None)
     pc_inherits = pc_config.get("inherits", "") or ""
@@ -318,6 +356,8 @@ def compare(pc_config: dict, gestor_file: dict, gestor_parent: dict | None,
             gestor_value = from_api(key, parent[key])
         else:
             gestor_value = None
+        if only_in_one_version(key, pc_value, gestor_value, per_variant):
+            continue
         if not same_value(key, pc_value, gestor_value, per_variant):
             result.differences.append(Difference(key, pc_value, gestor_value))
     return result
