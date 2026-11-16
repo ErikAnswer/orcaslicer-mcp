@@ -68,12 +68,21 @@ async def test_not_created_without_replacing_the_project():
 
 
 @respx.mock
-async def test_not_created_from_an_older_build_does_not_claim_nothing_changed():
+async def test_not_created_from_an_older_build_counts_the_project_as_replaced():
     respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(422, json={"error": "not_created"}))
     out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
     assert out["error"] == "not_created"
-    assert out["project_replaced"] == "unknown"
-    assert "get_project" in out["detail"]
+    assert out["project_replaced"] is True
+    assert out["detail"] == srv._CALIBRATION_REPLACED
+
+
+@respx.mock
+async def test_not_created_replaced_without_detail_gets_the_restore_point_text():
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        500, json={"error": "not_created", "project_replaced": True}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002, discard_unsaved=True)
+    assert out["project_replaced"] is True
+    assert out["detail"] == srv._CALIBRATION_REPLACED
 
 
 @respx.mock

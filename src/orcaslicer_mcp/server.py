@@ -1492,15 +1492,10 @@ def _calibration_err(e: ApiError) -> dict:
     if body.get("error") != "not_created":
         return out
     replaced = body.get("project_replaced")
-    if not isinstance(replaced, bool):
-        out["project_replaced"] = "unknown"
-        out["detail"] = ("the calibration test created no objects; this OrcaSlicer build does not say "
-                         "whether the previous project was replaced, check get_project")
-        return out
-    out["project_replaced"] = replaced
+    out["project_replaced"] = replaced if isinstance(replaced, bool) else True
     if isinstance(body.get("detail"), str) and body["detail"].strip():
         out["detail"] = body["detail"]
-    elif replaced:
+    elif out["project_replaced"]:
         out["detail"] = _CALIBRATION_REPLACED
     return out
 
