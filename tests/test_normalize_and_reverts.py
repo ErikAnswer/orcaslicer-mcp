@@ -185,6 +185,19 @@ async def test_apply_and_slice_passes_on_a_null_that_was_not_reverted(monkeypatc
 
 
 @respx.mock
+async def test_null_on_a_filament_key_still_listed_with_its_slot_suffix_is_not_reverted():
+    respx.get(f"{BASE}/api/v1/status").mock(return_value=httpx.Response(200, json=_status(
+        {"print": [], "filament": ["nozzle_temperature#1"], "printer": []})))
+    respx.post(f"{BASE}/api/v1/preset/config").mock(return_value=httpx.Response(200, json={
+        "config": {"nozzle_temperature": "230"}}))
+    respx.get(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={"config": {}}))
+    respx.put(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={
+        "applied": ["nozzle_temperature"], "errors": {}}))
+    out = await srv.set_config({"nozzle_temperature": None})
+    assert out["not_reverted"] == ["nozzle_temperature"] and "reverted" not in out
+
+
+@respx.mock
 async def test_a_refused_batch_with_a_null_is_not_checked_again():
     status = respx.get(f"{BASE}/api/v1/status").mock(return_value=httpx.Response(200, json=_status(
         {"print": ["wall_loops"], "filament": [], "printer": []})))
