@@ -16,6 +16,11 @@ points at them is correct and stays as upstream wrote it:
 - The notices for the plugin on stock OrcaSlicer (`src/orcaslicer_mcp/plugin_update.py`, `plugin_text.py`,
   `errors.py`). The plugin is released only upstream, and these notices never appear with the fork build.
 
+  `LATEST_PLUGIN_VERSION` follows the plugin file in this fork, so it can run ahead of what upstream has
+  released (0.2.4 here while upstream and OrcaCloud still ship 0.2.3). Until upstream releases that version, a
+  stock-OrcaSlicer user of this fork would be told about a plugin the link does not offer yet. This is accepted
+  (#1023): nobody runs this fork with the stock plugin, and the gap closes on the next merge from upstream.
+
 Rewriting any of these to name the fork would conflict with every upstream release and point at releases that
 do not exist.
 
