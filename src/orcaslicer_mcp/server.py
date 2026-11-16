@@ -906,6 +906,12 @@ _NOT_REVERTED_DETAIL = (
     "the value you want instead of null; get_preset_config of the selected preset shows the edited values too.")
 
 
+_REVERT_UNCHECKED_DETAIL = (
+    "The changes were written, but get_status failed right after, so whether the reverted keys lost their "
+    "unsaved edit is unconfirmed; get_status lists what is still modified.")
+_REVERT_REPLY_KEYS = ("reverted", "already_saved", "not_reverted", "detail")
+
+
 async def _still_modified(c, keys: list) -> list:
     """The keys that get_status still lists as unsaved edits, in the order given."""
     modified = (await c.get_status()).get("modified") or {}
@@ -925,7 +931,11 @@ async def _put_config_with_reverts(c, changes: dict, slot: int | None = None) ->
         if slot is not None:
             result["slot"] = slot + 1
     if reverted and slot is None and not result.get("errors"):
-        stuck = await _still_modified(c, reverted)
+        try:
+            stuck = await _still_modified(c, reverted)
+        except ApiError:  # the write went through; only the confirmation is missing
+            stuck = []
+            result["detail"] = _REVERT_UNCHECKED_DETAIL
         if stuck:
             reverted = [k for k in reverted if k not in stuck]
             result["not_reverted"] = stuck
@@ -1177,16 +1187,17 @@ async def apply_and_slice(
             applied = await _put_config_with_reverts(c, changes)
             if applied.get("errors") and not applied.get("applied"):
                 return {"applied": [], "errors": applied["errors"], "result": None}
+            reverts = {k: applied[k] for k in _REVERT_REPLY_KEYS if k in applied}
             try:
                 started = await _start_slice(c)
             except Validation as e:
                 return {"applied": applied.get("applied", []),
-                        "errors": applied.get("errors", {}), "result": await _slice_err(c, e)}
+                        "errors": applied.get("errors", {}), "result": await _slice_err(c, e), **reverts}
             if not started.get("already_valid"):
                 await _wait_for_slice(c, 300)
             result = summarize_slice(await c.slice_status())
             return {"applied": applied.get("applied", []),
-                    "errors": applied.get("errors", {}), "result": result}
+                    "errors": applied.get("errors", {}), "result": result, **reverts}
     except ApiError as e:
         return _err(e)
 

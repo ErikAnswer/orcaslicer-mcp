@@ -152,6 +152,39 @@ async def test_null_that_leaves_the_key_modified_is_reported_as_not_reverted():
 
 
 @respx.mock
+async def test_null_whose_check_fails_keeps_the_write_and_says_it_is_unconfirmed():
+    respx.get(f"{BASE}/api/v1/status").mock(side_effect=[
+        httpx.Response(200, json=_status({"print": ["wall_loops"], "filament": [], "printer": []})),
+        httpx.Response(500, json={"error": "busy"})])
+    respx.post(f"{BASE}/api/v1/preset/config").mock(return_value=httpx.Response(200, json={
+        "config": {"wall_loops": "2"}}))
+    respx.get(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={"config": {"wall_loops": "5"}}))
+    respx.put(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={
+        "applied": ["wall_loops"], "errors": {}}))
+    out = await srv.set_config({"wall_loops": None})
+    assert out["applied"] == ["wall_loops"] and out["reverted"] == ["wall_loops"]
+    assert "unconfirmed" in out["detail"] and "error" not in out
+
+
+@respx.mock
+async def test_apply_and_slice_passes_on_a_null_that_was_not_reverted(monkeypatch):
+    respx.get(f"{BASE}/api/v1/status").mock(return_value=httpx.Response(200, json=_status(
+        {"print": ["layer_height"], "filament": [], "printer": []})))
+    respx.post(f"{BASE}/api/v1/preset/config").mock(return_value=httpx.Response(200, json={
+        "config": {"layer_height": "0.16"}}))
+    respx.get(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={"config": {"layer_height": "0.16"}}))
+    respx.put(f"{BASE}/api/v1/config").mock(return_value=httpx.Response(200, json={
+        "applied": ["layer_height"], "errors": {}}))
+    respx.post(f"{BASE}/api/v1/slice").mock(return_value=httpx.Response(200, json={
+        "already_valid": True, "started": False}))
+    respx.get(f"{BASE}/api/v1/slice/status").mock(return_value=httpx.Response(200, json={
+        "state": "done", "percent": 100, "message": "", "stats": {"total_cost": 0.1}, "warnings": []}))
+    out = await srv.apply_and_slice({"layer_height": None})
+    assert out["not_reverted"] == ["layer_height"] and "reverted" not in out
+    assert "set the value you want" in out["detail"] and out["result"]["state"] == "done"
+
+
+@respx.mock
 async def test_a_refused_batch_with_a_null_is_not_checked_again():
     status = respx.get(f"{BASE}/api/v1/status").mock(return_value=httpx.Response(200, json=_status(
         {"print": ["wall_loops"], "filament": [], "printer": []})))
