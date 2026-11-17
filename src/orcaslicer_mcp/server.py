@@ -1518,6 +1518,9 @@ _CALIBRATION_MAYBE_OVERWRITTEN_DETAIL = (
     " The keys under preset_edits_overwritten already held unsaved edits before the test, and their values could "
     "not be read to tell whether it changed them: null would also throw away the earlier edit, so ask the user "
     "which value they want back.")
+_CALIBRATION_FILAMENT_WHOLE_VALUE = (
+    " Filament keys are compared by their value across all slots at once, so a filament key listed there may "
+    "have changed in only some slots: get_config with by_slot shows which.")
 _PRESET_EDIT_REPLY_KEYS = ("preset_edits", "preset_edits_overwritten", "modified_presets", "preset_edits_detail")
 _CALIBRATION_EDITS_UNCHECKED = (
     "get_status failed after the test was created, so which preset keys it left as unsaved edits is unknown; "
@@ -1558,6 +1561,17 @@ async def _calibration_snapshot(c) -> tuple[dict | None, dict | None]:
     return modified, await _config_values(c, modified)
 
 
+async def _calibration_snapshot_after(c, before: tuple[dict | None, dict | None]) -> tuple[dict | None, dict | None]:
+    """The edits left after the test, with values read only for the keys that already held an edit before it."""
+    before_keys, before_values = before
+    modified = await _modified_keys(c)
+    if modified is None or before_keys is None or before_values is None:
+        return modified, {}
+    still_edited = {g: [k for k in modified.get(g) or [] if k in set(before_keys.get(g) or [])]
+                    for g in _CALIBRATION_EDIT_GROUPS}
+    return modified, await _config_values(c, still_edited)
+
+
 def _non_empty(groups: dict) -> dict:
     return {g: keys for g, keys in groups.items() if keys}
 
@@ -1589,7 +1603,8 @@ def _add_preset_edits(out: dict, before: tuple[dict | None, dict | None],
         out["preset_edits_overwritten"] = overwritten
     if edits or overwritten:
         suffix = (_CALIBRATION_OVERWRITTEN_DETAIL if values_known else _CALIBRATION_MAYBE_OVERWRITTEN_DETAIL)
-        out["preset_edits_detail"] = _CALIBRATION_EDITS_DETAIL + (suffix if overwritten else "")
+        filament_note = _CALIBRATION_FILAMENT_WHOLE_VALUE if values_known and "filament" in overwritten else ""
+        out["preset_edits_detail"] = _CALIBRATION_EDITS_DETAIL + (suffix + filament_note if overwritten else "")
 
 
 @mcp.tool()
@@ -1636,7 +1651,7 @@ async def create_calibration(
         async with _client() as c:
             before = await _calibration_snapshot(c)
             out = await c.create_calibration(body)
-            _add_preset_edits(out, before, await _calibration_snapshot(c))
+            _add_preset_edits(out, before, await _calibration_snapshot_after(c, before))
             if tool is not None:
                 assigned = []
                 try:
