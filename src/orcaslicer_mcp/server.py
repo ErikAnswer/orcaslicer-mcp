@@ -1614,7 +1614,10 @@ async def _add_filament_target(c, out: dict) -> None:
     shared = f" (slots {', '.join(map(str, slots))} share it, so it reaches all of them)" if len(slots) > 1 else ""
     if "filament" in (out.get("preset_edits") or {}):
         out["preset_edits_detail"] += (f" The filament keys went to {preset!r}, the preset open in the Filament tab: "
-                                       f"put them back with set_config and filament_slot={slots[0]}{shared}.")
+                                       f"put them back with set_config and filament_slot={slots[0]}{shared}"
+                                       + (", those under preset_edits_overwritten only once the user says which value "
+                                          "they want." if "filament" in (out.get("preset_edits_overwritten") or {})
+                                          else "."))
     else:
         out["preset_edits_detail"] += (f" The filament keys are in {preset!r}, the preset open in the Filament tab: "
                                        f"once the user says which value they want, set it with set_config and "

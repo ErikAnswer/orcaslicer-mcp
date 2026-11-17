@@ -421,3 +421,20 @@ async def test_calibration_treats_an_unexpected_filaments_body_as_unknown():
     assert out["created"] is True and out["preset_edits"] == {"filament": ["slow_down_layer_time"]}
     assert "filament_preset" not in out
     assert out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_FILAMENT_PRESET_UNKNOWN
+
+
+@respx.mock
+async def test_calibration_with_new_and_overwritten_filament_keys_asks_only_for_the_overwritten():
+    _status({"filament": ["filament_flow_ratio#1"]}, {"filament": ["filament_flow_ratio#1", "slow_down_layer_time#1"]})
+    respx.get(f"{BASE}/config").mock(side_effect=[
+        httpx.Response(200, json={"config": {"filament_flow_ratio": "0.98"}}),
+        httpx.Response(200, json={"config": {"filament_flow_ratio": "1"}})])
+    _filaments(MARBLE, 1, "Generic PLA", MARBLE)
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert out["preset_edits"] == {"filament": ["slow_down_layer_time"]}
+    assert out["preset_edits_overwritten"] == {"filament": ["filament_flow_ratio"]}
+    assert out["preset_edits_detail"].endswith(
+        f" The filament keys went to {MARBLE!r}, the preset open in the Filament tab: put them back with set_config "
+        "and filament_slot=2, those under preset_edits_overwritten only once the user says which value they want.")
