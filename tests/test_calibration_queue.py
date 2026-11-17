@@ -22,6 +22,15 @@ def _status(*modified: dict):
     return respx.get(f"{BASE}/status").mock(side_effect=replies + [replies[-1]] * 3)
 
 
+def _filaments(tab_preset: str | None, tab_slot: int | None, *presets: str):
+    rows = [{"index": i, "preset": name} for i, name in enumerate(presets)]
+    return respx.get(f"{BASE}/filaments").mock(return_value=httpx.Response(
+        200, json={"count": len(rows), "filaments": rows, "tab": {"preset": tab_preset, "slot": tab_slot}}))
+
+
+MARBLE = "SM PLA Marble - White"
+
+
 @respx.mock
 async def test_range_calibration_sends_range_and_assigns_tool():
     _status()
@@ -136,12 +145,16 @@ async def test_calibration_lists_the_preset_edits_it_left():
              "filament": ["slow_down_layer_time#0", "slow_down_layer_time#1"],
              "printer": ["extruder_nozzle_stats"]})
     respx.get(f"{BASE}/config").mock(return_value=httpx.Response(200, json={"config": {"layer_height": "0.2"}}))
+    _filaments("Generic PLA", 0, "Generic PLA")
     respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
         200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
     out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
     assert out["preset_edits"] == {"print": ["inner_wall_speed", "outer_wall_speed"],
                                    "filament": ["slow_down_layer_time"]}
-    assert out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL
+    assert out["filament_preset"] == "Generic PLA" and out["filament_slots"] == [1]
+    assert out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL + (
+        " The filament keys went to 'Generic PLA', the preset open in the Filament tab: "
+        "put them back with set_config and filament_slot=1.")
     assert "preset_edits_overwritten" not in out
 
 
@@ -166,12 +179,15 @@ async def test_calibration_flags_earlier_edits_as_maybe_overwritten_when_config_
     _status({"print": ["outer_wall_speed"], "filament": ["slow_down_layer_time#0"]},
             {"print": ["outer_wall_speed", "inner_wall_speed"], "filament": ["slow_down_layer_time#0"]})
     respx.get(f"{BASE}/config").mock(return_value=httpx.Response(500, json={"error": "boom"}))
+    respx.get(f"{BASE}/filaments").mock(return_value=httpx.Response(404, json={"error": "not_found"}))
     respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
         200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
     out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
     assert out["preset_edits"] == {"print": ["inner_wall_speed"]}
     assert out["preset_edits_overwritten"] == {"print": ["outer_wall_speed"], "filament": ["slow_down_layer_time"]}
-    assert out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_MAYBE_OVERWRITTEN_DETAIL
+    assert "filament_preset" not in out and "filament_slots" not in out
+    assert out["preset_edits_detail"] == (srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_MAYBE_OVERWRITTEN_DETAIL
+                                          + srv._CALIBRATION_FILAMENT_PRESET_UNKNOWN)
 
 
 @respx.mock
@@ -241,12 +257,17 @@ async def test_calibration_says_overwritten_filament_keys_are_compared_across_sl
     respx.get(f"{BASE}/config").mock(side_effect=[
         httpx.Response(200, json={"config": {"slow_down_layer_time": "8,8"}}),
         httpx.Response(200, json={"config": {"slow_down_layer_time": "1,8"}})])
+    _filaments("Generic PLA", 0, "Generic PLA", "Generic PLA")
     respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
         200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
     out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
     assert out["preset_edits_overwritten"] == {"filament": ["slow_down_layer_time"]}
+    assert out["filament_preset"] == "Generic PLA" and out["filament_slots"] == [1, 2]
     assert out["preset_edits_detail"] == (srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_OVERWRITTEN_DETAIL
-                                          + srv._CALIBRATION_FILAMENT_WHOLE_VALUE)
+                                          + srv._CALIBRATION_FILAMENT_WHOLE_VALUE
+                                          + " The filament keys went to 'Generic PLA', the preset open in the Filament "
+                                          "tab: put them back with set_config and filament_slot=1 (slots 1, 2 share "
+                                          "it, so it reaches all of them).")
 
 
 @respx.mock
@@ -311,3 +332,64 @@ async def test_send_to_queue_reports_upload_and_errors_keep_detail(monkeypatch):
         502, json={"error": "send_failed", "detail": "not every filament of the plate matches a loaded printer slot"}))
     out = await srv.send_to_queue()
     assert out["error"] == "send_failed: not every filament of the plate matches a loaded printer slot"
+
+
+@respx.mock
+async def test_calibration_names_the_open_filament_preset_when_it_is_not_in_slot_one():
+    _status({}, {"print": ["inner_wall_speed"], "filament": ["slow_down_layer_time#1"]})
+    _filaments(MARBLE, 1, "Generic PLA", MARBLE)
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert out["preset_edits"] == {"print": ["inner_wall_speed"], "filament": ["slow_down_layer_time"]}
+    assert out["filament_preset"] == MARBLE and out["filament_slots"] == [2]
+    assert out["preset_edits_detail"].endswith(
+        f" The filament keys went to {MARBLE!r}, the preset open in the Filament tab: "
+        "put them back with set_config and filament_slot=2.")
+
+
+@respx.mock
+async def test_calibration_puts_the_tab_slot_first_among_the_slots_sharing_the_preset():
+    _status({}, {"filament": ["slow_down_layer_time#2"]})
+    _filaments(MARBLE, 2, MARBLE, "Generic PLA", MARBLE)
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert out["filament_slots"] == [3, 1]
+    assert "filament_slot=3 (slots 3, 1 share it" in out["preset_edits_detail"]
+
+
+@respx.mock
+async def test_calibration_says_when_no_slot_uses_the_open_filament_preset():
+    _status({}, {"filament": ["slow_down_layer_time#0"]})
+    _filaments(MARBLE, None, "Generic PLA")
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert out["filament_preset"] == MARBLE and out["filament_slots"] == []
+    assert out["preset_edits_detail"] == (srv._CALIBRATION_EDITS_DETAIL
+                                          + srv._CALIBRATION_FILAMENT_PRESET_UNUSED.format(preset=MARBLE))
+
+
+@respx.mock
+async def test_calibration_with_print_edits_only_does_not_read_the_filament_slots():
+    _status({}, {"print": ["inner_wall_speed"]})
+    filaments = _filaments(MARBLE, 1, "Generic PLA", MARBLE)
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert filaments.call_count == 0
+    assert "filament_preset" not in out and out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL
+
+
+@respx.mock
+async def test_calibration_keeps_the_filament_preset_when_assigning_the_tool_fails():
+    _status({}, {"filament": ["slow_down_layer_time#1"]})
+    _filaments(MARBLE, 1, "Generic PLA", MARBLE)
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    respx.put(f"{BASE}/objects/7/config").mock(return_value=httpx.Response(500, json={"error": "boom"}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002, tool=2)
+    assert out["error"].startswith("boom")
+    assert out["filament_preset"] == MARBLE and out["filament_slots"] == [2]
+    assert "filament_slot=2" in out["preset_edits_detail"]

@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Added
+- `create_calibration` says which filament preset its filament keys went to and how to put them back: `filament_preset` is the preset open in the Filament tab, where the generator writes, `filament_slots` the slots that use it (the tab's own slot first), and `preset_edits_detail` names the `filament_slot` to pass to `set_config`. Reverting with `filament_slot` 1 when the open preset was slot 2's was refused with `filament_edits_unsaved`. When no slot uses that preset, the detail says to set back the saved values from `get_preset_config`; when the slots cannot be read, it points to `get_filament_slots`.
+
 ### Fixed
 - `create_calibration` reads the preset values after the test only for the keys that already held an unsaved edit before it, and not at all when there were none or the earlier read failed, instead of fetching the config again every time. When `preset_edits_overwritten` lists filament keys whose values were compared, `preset_edits_detail` says they are compared by their value across all slots at once and that `get_config` with `by_slot` shows which slot changed.
 - `sync_presets`: the `printer_kept_by_gestor` refusal of `pc_to_gestor` gives its real reason. The Gestor 3D now resolves `printer_model` through `inherits` and keeps the chamber line of the start G-code as `M191 S0`, so the old reason (the PC file lacks `printer_model` and holds a start G-code the Gestor cannot use) no longer held; the printer stays out of the copy because each side keeps its own printer on purpose.
