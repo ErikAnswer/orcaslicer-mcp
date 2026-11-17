@@ -265,9 +265,9 @@ async def test_calibration_says_overwritten_filament_keys_are_compared_across_sl
     assert out["filament_preset"] == "Generic PLA" and out["filament_slots"] == [1, 2]
     assert out["preset_edits_detail"] == (srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_OVERWRITTEN_DETAIL
                                           + srv._CALIBRATION_FILAMENT_WHOLE_VALUE
-                                          + " The filament keys went to 'Generic PLA', the preset open in the Filament "
-                                          "tab: put them back with set_config and filament_slot=1 (slots 1, 2 share "
-                                          "it, so it reaches all of them).")
+                                          + " The filament keys are in 'Generic PLA', the preset open in the Filament "
+                                          "tab: once the user says which value they want, set it with set_config and "
+                                          "filament_slot=1 (slots 1, 2 share it, so it reaches all of them).")
 
 
 @respx.mock
@@ -393,3 +393,31 @@ async def test_calibration_keeps_the_filament_preset_when_assigning_the_tool_fai
     assert out["error"].startswith("boom")
     assert out["filament_preset"] == MARBLE and out["filament_slots"] == [2]
     assert "filament_slot=2" in out["preset_edits_detail"]
+
+
+@respx.mock
+async def test_calibration_with_unknown_earlier_edits_asks_before_reverting_filament_keys():
+    respx.get(f"{BASE}/status").mock(side_effect=[
+        httpx.Response(500, json={"error": "boom"}),
+        httpx.Response(200, json={"modified": {"print": [], "filament": ["slow_down_layer_time#1"]}})])
+    _filaments(MARBLE, 1, "Generic PLA", MARBLE)
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert out["modified_presets"] == {"filament": ["slow_down_layer_time"]}
+    assert out["filament_slots"] == [2]
+    assert out["preset_edits_detail"].endswith(
+        f" The filament keys are in {MARBLE!r}, the preset open in the Filament tab: once the user says which "
+        "value they want, set it with set_config and filament_slot=2.")
+
+
+@respx.mock
+async def test_calibration_treats_an_unexpected_filaments_body_as_unknown():
+    _status({}, {"filament": ["slow_down_layer_time#1"]})
+    respx.get(f"{BASE}/filaments").mock(return_value=httpx.Response(200, json=["not", "a", "dict"]))
+    respx.post(f"{BASE}/calibration").mock(return_value=httpx.Response(
+        200, json={"created": True, "objects": [{"id": 7, "name": "pa_tower"}]}))
+    out = await srv.create_calibration("pa_tower", 0, 0.08, 0.002)
+    assert out["created"] is True and out["preset_edits"] == {"filament": ["slow_down_layer_time"]}
+    assert "filament_preset" not in out
+    assert out["preset_edits_detail"] == srv._CALIBRATION_EDITS_DETAIL + srv._CALIBRATION_FILAMENT_PRESET_UNKNOWN

@@ -1581,6 +1581,8 @@ async def _calibration_snapshot_after(c, before: tuple[dict | None, dict | None]
 
 def _calibration_filament_target(raw: dict) -> tuple[str | None, list[int]]:
     """The preset open in the Filament tab, where the generator writes its filament keys, and the 1-based slots using it."""
+    if not isinstance(raw, dict):
+        return None, []
     tab = raw.get("tab") if isinstance(raw.get("tab"), dict) else {}
     preset = tab.get("preset") if isinstance(tab.get("preset"), str) and tab.get("preset") else None
     rows = raw.get("filaments") if isinstance(raw.get("filaments"), list) else []
@@ -1610,8 +1612,13 @@ async def _add_filament_target(c, out: dict) -> None:
         out["preset_edits_detail"] += _CALIBRATION_FILAMENT_PRESET_UNUSED.format(preset=preset)
         return
     shared = f" (slots {', '.join(map(str, slots))} share it, so it reaches all of them)" if len(slots) > 1 else ""
-    out["preset_edits_detail"] += (f" The filament keys went to {preset!r}, the preset open in the Filament tab: "
-                                   f"put them back with set_config and filament_slot={slots[0]}{shared}.")
+    if "filament" in (out.get("preset_edits") or {}):
+        out["preset_edits_detail"] += (f" The filament keys went to {preset!r}, the preset open in the Filament tab: "
+                                       f"put them back with set_config and filament_slot={slots[0]}{shared}.")
+    else:
+        out["preset_edits_detail"] += (f" The filament keys are in {preset!r}, the preset open in the Filament tab: "
+                                       f"once the user says which value they want, set it with set_config and "
+                                       f"filament_slot={slots[0]}{shared}.")
 
 
 def _non_empty(groups: dict) -> dict:
