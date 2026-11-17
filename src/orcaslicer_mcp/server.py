@@ -1521,7 +1521,14 @@ _CALIBRATION_MAYBE_OVERWRITTEN_DETAIL = (
 _CALIBRATION_FILAMENT_WHOLE_VALUE = (
     " Filament keys are compared by their value across all slots at once, so a filament key listed there may "
     "have changed in only some slots: get_config with by_slot shows which.")
-_PRESET_EDIT_REPLY_KEYS = ("preset_edits", "preset_edits_overwritten", "modified_presets", "preset_edits_detail")
+_PRESET_EDIT_REPLY_KEYS = ("preset_edits", "preset_edits_overwritten", "modified_presets", "filament_preset",
+                           "filament_slots", "preset_edits_detail")
+_CALIBRATION_FILAMENT_PRESET_UNKNOWN = (
+    " Which filament preset the filament keys went to could not be read (it is the one open in the Filament tab): "
+    "get_filament_slots shows it under filament_tab and the slots that use it.")
+_CALIBRATION_FILAMENT_PRESET_UNUSED = (
+    " The filament keys went to {preset!r}, the preset open in the Filament tab, and no slot uses it, so "
+    "filament_slot cannot reach it: get_preset_config of that preset gives the saved values to set back.")
 _CALIBRATION_EDITS_UNCHECKED = (
     "get_status failed after the test was created, so which preset keys it left as unsaved edits is unknown; "
     "check get_status and put the test's edits back with set_config {key: null} when the test is done.")
@@ -1570,6 +1577,51 @@ async def _calibration_snapshot_after(c, before: tuple[dict | None, dict | None]
     still_edited = {g: [k for k in modified.get(g) or [] if k in set(before_keys.get(g) or [])]
                     for g in _CALIBRATION_EDIT_GROUPS}
     return modified, await _config_values(c, still_edited)
+
+
+def _calibration_filament_target(raw: dict) -> tuple[str | None, list[int]]:
+    """The preset open in the Filament tab, where the generator writes its filament keys, and the 1-based slots using it."""
+    if not isinstance(raw, dict):
+        return None, []
+    tab = raw.get("tab") if isinstance(raw.get("tab"), dict) else {}
+    preset = tab.get("preset") if isinstance(tab.get("preset"), str) and tab.get("preset") else None
+    rows = raw.get("filaments") if isinstance(raw.get("filaments"), list) else []
+    slots = [int(r["index"]) + 1 for r in rows
+             if isinstance(r, dict) and isinstance(r.get("index"), int) and preset and r.get("preset") == preset]
+    tab_slot = tab.get("slot")
+    if isinstance(tab_slot, int) and tab_slot + 1 in slots:
+        slots.remove(tab_slot + 1)
+        slots.insert(0, tab_slot + 1)
+    return preset, slots
+
+
+async def _add_filament_target(c, out: dict) -> None:
+    """Say which filament preset the test edited and the filament_slot that puts its keys back."""
+    if not any("filament" in (out.get(k) or {}) for k in ("preset_edits", "preset_edits_overwritten", "modified_presets")):
+        return
+    try:
+        preset, slots = _calibration_filament_target(await c.get_filaments())
+    except ApiError:
+        preset, slots = None, []
+    if preset is None:
+        out["preset_edits_detail"] += _CALIBRATION_FILAMENT_PRESET_UNKNOWN
+        return
+    out["filament_preset"] = preset
+    out["filament_slots"] = slots
+    if not slots:
+        out["preset_edits_detail"] += _CALIBRATION_FILAMENT_PRESET_UNUSED.format(preset=preset)
+        return
+    shared = f" (slots {', '.join(map(str, slots))} share it, so it reaches all of them)" if len(slots) > 1 else ""
+    if "filament" in (out.get("preset_edits") or {}):
+        out["preset_edits_detail"] += (f" The filament keys went to {preset!r}, the preset open in the Filament tab: "
+                                       f"put them back with set_config and filament_slot={slots[0]}{shared}"
+                                       + (", those under preset_edits_overwritten only once the user says which value "
+                                          "they want." if "filament" in (out.get("preset_edits_overwritten") or {})
+                                          else "."))
+    else:
+        out["preset_edits_detail"] += (f" The filament keys are in {preset!r}, the preset open in the Filament tab: "
+                                       f"once the user says which value they want, set it with set_config and "
+                                       f"filament_slot={slots[0]}{shared}.")
 
 
 def _non_empty(groups: dict) -> dict:
@@ -1641,7 +1693,10 @@ async def create_calibration(
     when the test is done, put them back with set_config {key: null} (filament keys with
     filament_slot) or the user's next slice keeps the test's values. Keys that already held
     an unsaved edit and that the test changed come under `preset_edits_overwritten`: null
-    would lose that earlier edit too, so ask the user. Only a created test reports them."""
+    would lose that earlier edit too, so ask the user. When filament keys are among them,
+    `filament_preset` names the filament preset they went to (the one open in the Filament tab)
+    and `filament_slots` the slots that use it; revert with the first of those as filament_slot,
+    as `preset_edits_detail` says. Only a created test reports them."""
     body: dict = {"type": type, "discard_unsaved": discard_unsaved}
     if type == "flow_rate":
         body |= {"pass": flow_pass, "linear": linear}
@@ -1652,6 +1707,7 @@ async def create_calibration(
             before = await _calibration_snapshot(c)
             out = await c.create_calibration(body)
             _add_preset_edits(out, before, await _calibration_snapshot_after(c, before))
+            await _add_filament_target(c, out)
             if tool is not None:
                 assigned = []
                 try:
