@@ -1,6 +1,6 @@
 {
   "identifier": "maxellis-orcaslicer-mcp",
-  "version": "0.1.25",
+  "version": "0.1.27",
   "name": "OrcaSlicer MCP",
   "description": "Work a running OrcaSlicer with AI: load models, arrange the plate, tune settings, slice, and understand the result through slice breakdowns, setting explanations, and physics checks. Talks to OrcaSlicer on localhost or a host you configure and, for the printer tools, makes read-only requests to your printer; no cloud calls from this server.",
   "category": "developer",
@@ -22,7 +22,7 @@
   "artifacts": {
     "pypi": {
       "packageName": "orcaslicer-mcp",
-      "version": "0.1.25"
+      "version": "0.1.27"
     }
   },
   "deploymentOptions": [
@@ -160,6 +160,14 @@
     {
       "name": "set_filament_slot_mapping",
       "description": "Choose which CANVAS tray each filament prints from on the next Send (Elegoo Centauri Carbon 2 only); it starts nothing."
+    },
+    {
+      "name": "list_printers",
+      "description": "List the printers OrcaSlicer's Device tab knows and say which one is selected. Read-only."
+    },
+    {
+      "name": "select_printer",
+      "description": "Select a printer in OrcaSlicer's Device tab, as clicking it there does, so the Bambu Lab printer tools read that one."
     },
     {
       "name": "add_plate",

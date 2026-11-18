@@ -7,6 +7,9 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 
 ## [Unreleased]
 
+### Changed
+- Merged orcaslicer-mcp 0.1.26 and 0.1.27 (Bambu Lab printer status through OrcaSlicer, `list_printers`, `select_printer`, plugin on port 13131). The project tools keep our contract by name, and publishing to PyPI, the MCP registry and OrcaCloud stays out.
+
 ### Added
 - `create_calibration` says which filament preset its filament keys went to and how to put them back: `filament_preset` is the preset open in the Filament tab, where the generator writes, `filament_slots` the slots that use it (the tab's own slot first), and `preset_edits_detail` names the `filament_slot` to pass to `set_config`. Reverting with `filament_slot` 1 when the open preset was slot 2's was refused with `filament_edits_unsaved`. When no slot uses that preset, the detail says to set back the saved values from `get_preset_config`; when the slots cannot be read, it points to `get_filament_slots`.
 
@@ -31,6 +34,26 @@ and this project follows [Semantic Versioning](https://semver.org/spec/v2.0.0.ht
 ### Added
 - `create_calibration` says which preset keys the test left as unsaved edits: `preset_edits` lists them by preset, `{print: [...], filament: [...]}` (for `pa_tower`, `inner_wall_speed` and `outer_wall_speed` of the print preset and `slow_down_layer_time` of the filament), only the ones that were not already modified before the call, and `preset_edits_detail` says that they outlive the test project (`new_project` keeps them under `kept_changes`) and how to put them back with `set_config` and `null`, so the next slice does not keep the test's speeds. Keys that already held an unsaved edit and whose value the test changed come under `preset_edits_overwritten`, with a warning that `null` would also lose the earlier edit. When `get_status` fails before the test, every unsaved edit comes under `modified_presets` with a warning that some may be the user's own; when it fails after, `preset_edits_detail` says the edits are unknown. Only a created test reports them.
 - `docs/fork.md` says what still names upstream and why, and `tests/test_fork_not_published.py` fails if a merge from upstream brings its publishing scripts or workflows back.
+
+## [0.1.27] - 2026-11-18
+The OrcaSlicer MCP plugin 0.2.4 for stock OrcaSlicer 2.5 is attached below (`orcaslicer_mcp_plugin.py`) and on [OrcaCloud](https://cloud.orcaslicer.com/p/16d116a6bc41), which keeps it up to date.
+
+### Changed
+- The plugin now uses port 13131. The OrcaSlicer MCP build keeps 13130, so a stock OrcaSlicer with the plugin and the build can be open at the same time. They used to share 13130, and whichever started second had no server. A plugin that saved the old 13130 in its settings moves once. A port set in its `settings.json` stays. There is nothing to set up again: the connector finds the plugin's port by itself.
+- With both open, the connector uses the build, which can do everything the plugin does and more. The build counts as open when its port answers and the plugin isn't the one holding it. An old Claude extension setting of `http://127.0.0.1:13130` now reaches whichever OrcaSlicer is running.
+
+### Fixed
+- On Windows, closing an AI app could make OrcaSlicer pop up "Plugin permission request" windows about "open", several at a time. An app that stopped waiting for an answer did the same. The plugin printed an error report for the dropped connection, and OrcaSlicer asked about each file that report read. A dropped connection is no longer an error, and the plugin prints no error reports.
+- Two OrcaSlicers that share a settings folder no longer hide each other from the connector. Opening the OrcaSlicer MCP build, or a second stock OrcaSlicer, deleted the plugin's `connection.json` while the first one was still running. Now the plugin only deletes a file it wrote.
+
+## [0.1.26] - 2026-11-17
+The OrcaSlicer MCP plugin 0.2.3 for stock OrcaSlicer 2.5 is attached below (`orcaslicer_mcp_plugin.py`) and on [OrcaCloud](https://cloud.orcaslicer.com/p/16d116a6bc41), which keeps it up to date.
+
+The Bambu Lab status tools and the printer choice need the OrcaSlicer MCP build [v2.5.0-mcp.19](https://github.com/MaxEllis/OrcaSlicer/releases/tag/v2.5.0-mcp.19) or later. The plugin does not offer them.
+
+### Added
+- Bambu Lab printers: `get_printer_status` and `wait_for_printer` read the printer selected in OrcaSlicer's Device tab, through OrcaSlicer's own connection. They give the state, the job's progress and layer, the printer's own time left, nozzle, bed and chamber temperatures, fans and speed level. A job being loaded or set up before its first layer (bed levelling, homing, ...) reads as `preparing`, and the headline shows the printer's stage, such as changing filament. Problems come from the print error code and HMS faults, each with the sentence OrcaSlicer's Device tab shows for it and its Bambu wiki link. A job stopped without an error code, or with Bambu's "The task was canceled." code, reads as cancelled. The headline names the printer read, and a warning says when it is another model than the printer profile. `wait_for_printer` judges 'printing' from the layer counter and 'first_layer_done' from layer 2. `check_printer_match` keeps its AMS check, and `list_print_history` says a Bambu printer keeps no history OrcaSlicer can read.
+- `list_printers` and `select_printer` show the printers OrcaSlicer's Device tab knows and switch between them. The list holds the account's cloud printers and the LAN printers OrcaSlicer has an access code for, and says which one is selected. The switch does what a click there does and sends nothing to any printer. With several Bambu Lab printers, this is how the assistant chooses which one the tray and status tools read. `select_printer` waits for OrcaSlicer to connect and says whether it has. It reports a `profile_check` when the active printer profile is for another model, since the Device tab's selection and the printer profile are independent.
 
 ## [0.1.25-erik.1] - 2026-11-15
 Our fork (ErikAnswer) on top of orcaslicer-mcp 0.1.25; the package version stays 0.1.25 and the -erik.N suffix lives only in the git tag, as with 0.1.17-erik.N. Every route the 0.1.18-0.1.25 tools use (filament slots, Bambu Lab reads, the 2.5 temperature check) is in the fork build `erik-v2.5.0-mcp.16`, which carries all of MaxEllis's remote-api-250 (his v2.5.0-mcp.18).
