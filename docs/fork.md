@@ -26,7 +26,7 @@ do not exist.
 
 ## What the fork removes
 
-Everything that publishes: `scripts/cut-release.sh`, `scripts/cut-plugin-release.sh`, `.github/workflows/`,
+Everything that publishes: `scripts/cut-release.sh`, `scripts/cut-plugin-release.sh`, the upstream workflows in `.github/workflows/` (ours, `tests.yml`, only runs the tests),
 `packaging/server.json`, `plugin/orcacloud/` and `glama.json`. A merge from upstream brings them back as
 conflicts or new files; delete them again. `tests/test_fork_not_published.py` fails while any of them exists.
 The test knows these paths by name: when a merge brings a publishing script or manifest under a new name, delete
