@@ -7,7 +7,7 @@ from pathlib import Path
 import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
-FORK_WORKFLOWS = {"tests.yml"}
+FORK_WORKFLOWS = {"fork-tests.yml"}
 UPSTREAM_PUBLISHING = [
     "scripts/cut-release.sh",
     "scripts/cut-plugin-release.sh",

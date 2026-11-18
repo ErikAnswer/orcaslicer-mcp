@@ -2,8 +2,6 @@ name: Tests
 
 on:
   push:
-    branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -32,6 +30,6 @@ jobs:
       - name: Install
         run: pip install -e ".[dev]"
       - name: Connector tests
-        run: python -m pytest -q
+        run: python -m pytest -q tests
       - name: Plugin tests
         run: python -m pytest -q plugin/tests
