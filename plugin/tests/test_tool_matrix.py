@@ -39,6 +39,8 @@ ARGS = {
 }
 # Tools that talk to the printer, not OrcaSlicer (the fake printer address is unreachable).
 PRINTER_TOOLS = {"check_printer_match", "get_printer_status", "list_print_history", "wait_for_printer"}
+# Tools that talk to the Gestor 3D print queue, not OrcaSlicer (the test points them at a closed port).
+GESTOR_TOOLS = {"sync_presets"}
 EXPECT_WORKS = {"get_status", "get_config", "set_config", "list_presets", "get_preset_config",
                 "select_preset", "list_objects", "get_project",
                 # after the user pressed Slice plate (plugin 0.2.0)
@@ -73,6 +75,7 @@ def test_every_tool_is_honest_about_the_plugin(folder, plugin, monkeypatch, caps
     monkeypatch.setenv("ORCA_API_URL", plugin.base)
     monkeypatch.setenv("ORCA_API_TOKEN", plugin._token)
     monkeypatch.setenv("ORCA_API_TIMEOUT", "15")
+    monkeypatch.setenv("ORCA_GESTOR_URL", "http://127.0.0.1:9")
     for k in ("ORCA_PRINTER_URL", "ORCA_PRINTER_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     from orcaslicer_mcp import server
@@ -91,10 +94,13 @@ def test_every_tool_is_honest_about_the_plugin(folder, plugin, monkeypatch, caps
         return rows
 
     rows = asyncio.run(go())
-    buckets = {"works": [], "needs_build": [], "printer": [], "other": []}
+    buckets = {"works": [], "needs_build": [], "printer": [], "gestor": [], "other": []}
     for name, text in sorted(rows.items()):
         if name in PRINTER_TOOLS:
             buckets["printer"].append(name)
+        elif name in GESTOR_TOOLS:
+            assert "gestor_error" in text, (name, text)
+            buckets["gestor"].append(name)
         elif '"error"' in text and "OrcaSlicer MCP plugin" in text:
             buckets["needs_build"].append(name)
         elif '"error"' in text or "EXCEPTION" in text:
