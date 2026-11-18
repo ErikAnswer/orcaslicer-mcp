@@ -414,6 +414,17 @@ class OrcaClient:
     async def get_slot_mapping(self) -> dict:
         return await self._request("GET", "/api/v1/printer/slot_mapping", timeout=self._slot_timeout())
 
+    # Bambu Lab printer status through OrcaSlicer's own connection (capability bambu_status).
+    async def get_printer_status(self) -> dict:
+        return await self._request("GET", "/api/v1/printer/status")
+
+    # The printers OrcaSlicer's Device tab lists, and selecting one (capability printer_select).
+    async def get_printer_devices(self) -> dict:
+        return await self._request("GET", "/api/v1/printer/devices")
+
+    async def select_printer_device(self, dev_id: str) -> dict:
+        return await self._request("PUT", "/api/v1/printer/device", json={"id": dev_id})
+
     async def new_project(self, if_unsaved: str = "fail", name: str | None = None) -> dict:
         body: dict = {"if_unsaved": if_unsaved}
         if name:

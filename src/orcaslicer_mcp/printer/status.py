@@ -4,9 +4,10 @@ from __future__ import annotations
 import math
 from pathlib import PurePosixPath
 
+from .bambu import model_key
 from .problems import console_problems, job_problem, klippy_problem, moonraker_warnings, problem
 
-ACTIVE = frozenset({"heating", "printing", "paused"})
+ACTIVE = frozenset({"preparing", "heating", "printing", "paused"})  # preparing: Bambu only
 DONE = frozenset({"finished", "cancelled", "error"})
 NEAR_TARGET_C = 3.0
 _PROGRESS_FLOOR = 0.05  # below 5 %, extrapolating time left from progress is noise
@@ -182,6 +183,157 @@ def octoprint_snapshot(printer: dict | None, job: dict | None, *, target_public:
     return {"headline": headline(body), **body}
 
 
+# ---- Bambu Lab, through OrcaSlicer (printer/bambu.py) ------------------------------------------------------------
+# The fork hands over the printer's own words; this turns them into the shape above. gcode_state RUNNING covers
+# everything from bed levelling to the last layer, so the stage number tells heating apart; a stopped job is FAILED
+# whether cancelled or faulted, and the print error code tells those apart (none, or Bambu's own "The task was
+# canceled." code: cancelled).
+BAMBU_HEATING_STAGES = frozenset({2, 7})  # heatbed preheating, heating nozzle
+BAMBU_CANCEL_ERRORS = frozenset({"0300-400C", "0300400C", 50348044})  # Bambu's table: "The task was canceled."
+BAMBU_HMS_SEVERITY = {"fatal": "fatal", "serious": "error", "common": "warning", "info": "warning", "unknown": "warning"}
+BAMBU_HMS_MODULES = {"03": "motion controller", "05": "mainboard", "07": "AMS", "08": "toolhead", "0C": "camera"}
+BAMBU_STALE_S = 30.0
+BAMBU_OFFLINE_HINT = ("Check the printer is on and on the network; OrcaSlicer reconnects on its own. If it stays "
+                      "offline, select it again in OrcaSlicer's Device tab.")
+
+
+def bambu_hms_wiki(code: str) -> str | None:
+    """The Bambu wiki page for a 16-hex-digit HMS code (0700200000020001 -> 0700_2000_0002_0001)."""
+    c = (code or "").strip().upper()
+    if len(c) != 16 or any(ch not in "0123456789ABCDEF" for ch in c):
+        return None
+    return f"https://wiki.bambulab.com/en/x1/troubleshooting/hmscode/{c[0:4]}_{c[4:8]}_{c[8:12]}_{c[12:16]}"
+
+
+def _bambu_hms_problem(item: dict) -> dict | None:
+    code = str(item.get("code") or "").strip().upper()
+    if not code:
+        return None
+    level = str(item.get("level") or "unknown").lower()
+    module = BAMBU_HMS_MODULES.get(code[:2], "printer")
+    # The Device tab's own sentence for the code when the build sends it (fork mcp.19); the code alone otherwise.
+    text = str(item.get("message") or "").strip()
+    p = problem(BAMBU_HMS_SEVERITY.get(level, "warning"), "hms",
+                f"HMS {code}: {text}" if text else f"HMS {code}: a {level} {module} fault the printer reports.")
+    url = bambu_hms_wiki(code)
+    p["hint"] = (f"Look the code up at {url}" if url else "Look the code up in OrcaSlicer's HMS panel.")
+    return p
+
+
+def bambu_cancelled(print_error: dict | None) -> bool:
+    """A stop the printer reports as a cancel: no code, or the code Bambu's table calls "The task was canceled."."""
+    if not print_error:
+        return True
+    return (str(print_error.get("code") or "").strip().upper() in BAMBU_CANCEL_ERRORS
+            or print_error.get("value") in BAMBU_CANCEL_ERRORS)
+
+
+def bambu_state(gcode_state: str, stage: int | None, print_error: dict | None,
+                nozzle: dict | None, bed: dict | None, layer_current: int | None) -> str:
+    s = (gcode_state or "").upper()
+    if s == "PAUSE":
+        return "paused"
+    if s == "FINISH":
+        return "finished"
+    if s == "FAILED":
+        return "cancelled" if bambu_cancelled(print_error) else "error"
+    if s in ("PREPARE", "SLICING"):
+        return "preparing"
+    if s == "RUNNING":
+        if stage in BAMBU_HEATING_STAGES:
+            return "heating"
+        if not layer_current and _below_target(nozzle, bed):
+            return "heating"
+        if layer_current == 0 and stage not in (None, 0):
+            return "preparing"  # bed levelling, homing, nozzle cleaning, ...: the first layer has not begun
+        return "printing"
+    return "idle"
+
+
+_BAMBU_JOB_STATE = {"RUNNING": "running", "PAUSE": "paused", "PREPARE": "preparing", "SLICING": "preparing",
+                    "FINISH": "complete"}
+
+
+def _bambu_device(reply: dict) -> dict:
+    p = _obj(reply.get("printer"))
+    return {k: (str(p[k]).strip() or None) if p.get(k) is not None else None for k in ("name", "model", "connection")}
+
+
+def _bambu_model_mismatch(device: dict, profile: str | None, profile_model: str | None) -> dict | None:
+    """The printer read is another model than the printer profile is for (the Device tab's selection and the profile
+    are independent): the readings are right, slicing with that profile is not."""
+    model, name = device.get("model"), device.get("name") or "the printer"
+    if not model or not profile_model or model.lower() == "unknown" or model_key(model) == model_key(profile_model):
+        return None
+    p = problem("warning", "orcaslicer",
+                f"The printer profile{f' {profile!r}' if profile else ''} is for a {profile_model}; the printer "
+                f"selected in OrcaSlicer's Device tab, {name}, is a {model}.")
+    p["hint"] = (f"These readings are {name}'s. Before slicing for it, select_preset a printer profile for the "
+                 f"{model}; select_printer switches the Device tab instead.")
+    return p
+
+
+def bambu_snapshot(reply: dict, *, target_public: dict, profile_model: str | None = None) -> dict:
+    """The fork's GET /printer/status reply as a snapshot. A printer_offline reply is the offline state.
+    `profile_model` is the printer profile's printer_model, to say when the printer read is another model."""
+    reply = reply or {}
+    if reply.get("supported") is False:
+        msg = str(reply.get("message") or "The printer is not connected to OrcaSlicer right now.")
+        p = problem("fatal", "orcaslicer", msg)
+        p["hint"] = BAMBU_OFFLINE_HINT
+        body = {"printer": target_public, "connected": False, "state": "offline",
+                "temps": {"nozzle": None, "bed": None}, "job": None, "problems": [p]}
+        return {"headline": headline(body), **body}
+    temps_in, job_in = _obj(reply.get("temps")), _obj(reply.get("job"))
+    nozzle, bed = _octo_heater(temps_in.get("nozzle")), _octo_heater(temps_in.get("bed"))
+    chamber = _octo_heater(temps_in.get("chamber"))
+    gcode_state = str(reply.get("state") or "")
+    stage = _whole(reply.get("stage"))
+    print_error = reply.get("print_error") if isinstance(reply.get("print_error"), dict) else None
+    layer_in = _obj(job_in.get("layer"))
+    layer = {"current": _whole(layer_in.get("current")), "total": _whole(layer_in.get("total"))}
+    state = bambu_state(gcode_state, stage, print_error, nozzle, bed, layer["current"])
+    stage_text = str(reply.get("stage_text") or "").strip() or None
+    job = None
+    name = job_in.get("name") or job_in.get("file")
+    if name and (state in ACTIVE or state in DONE):
+        s = gcode_state.upper()
+        remaining = _f(job_in.get("remaining_s"), 0) if state in ACTIVE else None
+        job = {"file": name, "state": _BAMBU_JOB_STATE.get(s, state if state in DONE else "unknown"),
+               "progress_percent": _whole(job_in.get("progress_percent")), "layer": layer,
+               "elapsed_s": None, "remaining_s": None if remaining is None else int(remaining),
+               "remaining_basis": "printer_estimate" if remaining is not None else None,
+               "filament_used_mm": None, "first_layer_height": None, "stage": stage_text}
+    problems = []
+    if print_error and not bambu_cancelled(print_error):
+        # A stopped job's reason, or why a paused one waits (a filament runout, say). A cancel is no problem.
+        code = str(print_error.get("code") or print_error.get("value") or "").strip()
+        text = str(print_error.get("message") or "").strip()  # the Device tab's sentence (fork mcp.19)
+        lead = "The print stopped with printer error" if state == "error" else "The printer reports error"
+        if code:
+            msg = f"{lead} {code}: {text}" if text else f"{lead} {code}."
+        else:
+            msg = "The print stopped with an error the printer did not name."
+        problems.append(problem("error", "job", msg))
+    problems += [p for p in (_bambu_hms_problem(h) for h in _seq(reply.get("hms"))) if p]
+    device = _bambu_device(reply)
+    if (mismatch := _bambu_model_mismatch(device, target_public.get("profile"), profile_model)) is not None:
+        problems.append(mismatch)
+    age = _f(reply.get("updated_s_ago"), 1)
+    if age is not None and age > BAMBU_STALE_S:
+        problems.append(problem("warning", "orcaslicer",
+                                f"OrcaSlicer last heard from the printer {_dur(age)} ago: this may be stale."))
+    body = {
+        "printer": target_public, "connected": True, "state": state,
+        "temps": {"nozzle": nozzle, "bed": bed, "chamber": chamber}, "job": job, "problems": problems,
+        "bambu": {"device": device, "gcode_state": gcode_state, "stage": stage, "stage_text": stage_text,
+                  "nozzles": _seq(temps_in.get("nozzles")), "fans": reply.get("fans"),
+                  "speed_percent": _whole(reply.get("speed_percent")), "updated_s_ago": age,
+                  "connection": device.get("connection")},
+    }
+    return {"headline": headline(body), **body}
+
+
 def _name(file: str | None) -> str:
     if not file:
         return "a job"
@@ -246,7 +398,15 @@ def headline(snap: dict) -> str:
     job = snap.get("job") or {}
     name = _name(job.get("file"))
     if state == "printing":
-        first = _job_line("Printing", name, job, left=True)
+        # A Bambu printer says what it is doing before the first layer (bed levelling, say) and mid-print
+        # (changing filament): worth a word when it is not plain printing.
+        stage = job.get("stage")
+        tail = f", {stage[0].lower() + stage[1:]}" if stage and stage.lower() != "printing" else ""
+        first = _job_line("Printing", name, job, left=True, tail=tail)
+    elif state == "preparing":
+        stage = job.get("stage")
+        tail = f": {stage[0].lower() + stage[1:]}" if stage and stage.lower() != "printing" else ""
+        first = f"Preparing to print {name}{tail}."
     elif state == "paused":
         first = _job_line("Paused", name, job, left=False)
     elif state == "heating":
@@ -266,6 +426,11 @@ def headline(snap: dict) -> str:
         first = "The printer is offline."
     else:
         first = "Idle."
+    # A Bambu printer is the one selected in OrcaSlicer's Device tab, which may not be the one the profile is for:
+    # say which one was read.
+    device = ((snap.get("bambu") or {}).get("device") or {}).get("name")
+    if device:
+        first = f"{device}: {first}"
     parts = [first]
     temps = _temps_text(snap.get("temps") or {})
     if temps:

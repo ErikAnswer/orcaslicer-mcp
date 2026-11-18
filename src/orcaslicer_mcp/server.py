@@ -48,6 +48,7 @@ from .printer import wait as _pwait
 from .printer import history as _phistory
 from .printer import match as _pmatch
 from .printer import ams_match as _ams
+from .printer import bambu as _pbambu
 from .printer.errors import PrinterError
 from .printer.snapshot import take_snapshot
 from .printer.status import _dur as _duration_text
@@ -2137,6 +2138,181 @@ async def set_filament_slot_mapping(
         return _slots_err(e)
 
 
+# --- The Device tab's printers ---------------------------------------------------------------------------------
+
+_PRINTER_SELECT_NEED = "the Device tab printer routes"
+_select_sleep = asyncio.sleep      # bound at call time so tests can pass time without waiting
+_select_clock = time.monotonic
+
+
+def _device_rows(reply) -> list[dict]:
+    if not isinstance(reply, dict):
+        return []
+    return [d for d in (reply.get("devices") or []) if isinstance(d, dict)]
+
+
+def _device_state(d: dict) -> str:
+    if d.get("connected"):
+        return "printing" if d.get("printing") else "connected"
+    return "online, not connected" if d.get("online") else "offline"
+
+
+def _devices_headline(reply: dict) -> str:
+    rows = _device_rows(reply)
+    if not rows:
+        return "OrcaSlicer's Device tab lists no printers."
+    n = len(rows)
+    lead = f"{n} printer{'s' if n != 1 else ''} in OrcaSlicer's Device tab"
+    sel = next((d for d in rows if d.get("selected")), None)
+    if sel is None:
+        return lead + ", none selected."
+    return f"{lead}; {sel.get('name')} ({sel.get('model')}) is selected, {_device_state(sel)}."
+
+
+def _find_device(rows: list[dict], want: str) -> dict:
+    """The row whose id is `want`, else the one whose name is (case-insensitively); an error dict otherwise."""
+    for d in rows:
+        if d.get("id") == want:
+            return d
+    named = [d for d in rows if str(d.get("name") or "").strip().lower() == want.lower()]
+    if len(named) == 1:
+        return named[0]
+    listing = ", ".join(f"{d.get('name')} ({d.get('id')})" for d in rows) or "none"
+    if named:
+        return {"error": f"ambiguous_printer: {len(named)} printers are named '{want}'; pass the id instead",
+                "devices": [{"id": d.get("id"), "name": d.get("name"), "model": d.get("model")} for d in named]}
+    return {"error": f"unknown_printer: no printer in OrcaSlicer's Device tab is called or has the id '{want}'",
+            "devices": listing,
+            "hint": "list_printers shows them; a LAN printer OrcaSlicer has no access code for is added in the "
+                    "Device tab by hand"}
+
+
+def _profile_check(profile: str, profile_model: str, dev: dict) -> dict | None:
+    """When the active printer profile is for another model than the selected printer: what to tell the user."""
+    printer_model = str(dev.get("model") or "")
+    if not profile_model or not printer_model or printer_model.lower() == "unknown":
+        return None
+    if _pbambu.model_key(profile_model) == _pbambu.model_key(printer_model):
+        return None
+    return {"profile": profile, "profile_model": profile_model, "printer_model": printer_model,
+            "message": f"The active printer profile '{profile}' is for a {profile_model}; the selected printer "
+                       f"{dev.get('name')} is a {printer_model}.",
+            "hint": f"The trays and status read {dev.get('name')} all the same. Before slicing for it, select_preset "
+                    f"a printer profile for the {printer_model} (list_presets shows them)."}
+
+
+def _device_err(e: ApiError) -> dict:
+    out = _err(e)
+    body = getattr(e, "body", None) or {}
+    if body.get("detail") and "error" in out:
+        out["error"] += ": " + str(body["detail"])
+    if body.get("devices"):
+        out["devices"] = body["devices"]
+    return out
+
+
+@mcp.tool()
+async def list_printers() -> dict:
+    """List the printers OrcaSlicer's Device tab knows and say which one is selected. Read-only.
+
+    These are the printers bound in OrcaSlicer's Device tab, separate from the printer presets:
+    the account's cloud printers and the LAN printers whose access code OrcaSlicer holds. The
+    selected one is the Bambu Lab printer the tray tools (and status, on builds that serve it)
+    read. Each printer has id, name, model, connection (lan or cloud), online (present as
+    OrcaSlicer last saw it), connected (OrcaSlicer holds a live connection, which only the
+    selected printer can), printing and selected; `headline` sums it up. A Klipper or OctoPrint
+    printer is not in this list: the printer tools reach it at the active printer profile's
+    address, so switch it with select_preset on the printer group. Needs the OrcaSlicer MCP
+    build with the printer_select capability."""
+    try:
+        async with _client() as c:
+            if (missing := await _capability_missing(c, "printer_select", _PRINTER_SELECT_NEED)) is not None:
+                return missing
+            reply = await c.get_printer_devices()
+    except ApiError as e:
+        return _device_err(e)
+    if not isinstance(reply, dict):
+        return {"error": "protocol_error: OrcaSlicer answered the printer list with something other than an object"}
+    reply["headline"] = _devices_headline(reply)
+    return reply
+
+
+@mcp.tool()
+async def select_printer(
+    printer: Annotated[str, Field(description=(
+        "The printer to select: its id from list_printers, or its name as the Device tab shows it "
+        "(exact; case does not matter)."))],
+    wait_s: Annotated[float, Field(ge=0, le=60, description=(
+        "How long to wait for OrcaSlicer to connect to the printer after selecting it, in seconds; "
+        "0 returns at once."))] = 10.0,
+) -> dict:
+    """Select a printer in OrcaSlicer's Device tab, as clicking it there does, so the Bambu Lab printer tools read that one.
+
+    Changes OrcaSlicer's selection only: nothing is sent to a printer, and a print the previously
+    selected printer is running carries on (OrcaSlicer merely disconnects from it). The printer
+    must be one list_printers shows; a LAN printer OrcaSlicer has no access code for is added in
+    the Device tab by hand. Selecting the printer already selected changes nothing. After a
+    switch OrcaSlicer connects to the printer, which takes a few seconds: the tool waits up to
+    `wait_s` for `connected` and says either way; the tray and status tools answer
+    printer_offline until it is. The reply carries `profile_check` when the active printer
+    profile is for another model than the printer selected: the printer still reads, but tell
+    the user and offer select_preset for the matching printer profile before slicing. As with a
+    click in the tab, selecting a two-nozzle printer (H2D) whose model matches the profile makes
+    OrcaSlicer sync the profile's nozzle setup from the printer the next time the Prepare tab
+    opens: say so. Needs the OrcaSlicer MCP build with the printer_select capability."""
+    want = (printer or "").strip()
+    if not want:
+        return {"error": "printer is required: an id or a name from list_printers"}
+    try:
+        async with _client() as c:
+            if (missing := await _capability_missing(c, "printer_select", _PRINTER_SELECT_NEED)) is not None:
+                return missing
+            rows = _device_rows(await c.get_printer_devices())
+            match = _find_device(rows, want)
+            if "error" in match:
+                return match
+            before = next((d for d in rows if d.get("selected")), None)
+            r = await c.select_printer_device(match["id"])
+            if not isinstance(r, dict):
+                return {"error": "protocol_error: OrcaSlicer answered the selection with something other than an object"}
+            dev = r.get("device") if isinstance(r.get("device"), dict) else dict(match)
+            deadline = _select_clock() + wait_s
+            while wait_s > 0 and not dev.get("connected") and _select_clock() < deadline:
+                await _select_sleep(1.0)
+                dev = next((d for d in _device_rows(await c.get_printer_devices()) if d.get("id") == match["id"]), dev)
+            out = {"changed": bool(r.get("changed")), "selected": bool(r.get("selected", True)),
+                   "device": dev, "connected": bool(dev.get("connected"))}
+            if before is not None and before.get("id") != match["id"]:
+                out["before"] = {"id": before.get("id"), "name": before.get("name"), "model": before.get("model")}
+            # The active printer profile against the printer's model: a mismatch is the user's call, not an error.
+            status = await c.get_status()
+            profile = ((status or {}).get("presets") or {}).get("printer")
+            if profile:
+                try:
+                    cfg = (await c.get_preset_config("printer", profile)).get("config") or {}
+                except ApiError:
+                    cfg = {}
+                check = _profile_check(str(profile), str(cfg.get("printer_model") or ""), dev)
+                if check:
+                    out["profile_check"] = check
+    except ApiError as e:
+        return _device_err(e)
+    name, model = dev.get("name"), dev.get("model")
+    if not out["changed"]:
+        head = f"{name} ({model}) was already selected in OrcaSlicer's Device tab, {_device_state(dev)}."
+    elif not out["selected"]:
+        head = f"Asked OrcaSlicer to select {name} ({model}); the Device tab has not switched yet."
+    elif out["connected"]:
+        head = f"Selected {name} ({model}) in OrcaSlicer's Device tab; connected."
+    else:
+        head = (f"Selected {name} ({model}) in OrcaSlicer's Device tab; not connected yet"
+                + (f" after {wait_s:g} s" if wait_s > 0 else "") + ".")
+    if "profile_check" in out:
+        head += " " + out["profile_check"]["message"]
+    out["headline"] = head
+    return out
+
+
 @mcp.tool()
 async def add_plate(
     select: Annotated[bool, Field(description=(
@@ -3899,17 +4075,19 @@ def _remembered_lead(target) -> str:
             "(OrcaSlicer can't be read): ")
 
 
-async def _with_printer(fn, bambu=None) -> dict:
+async def _with_printer(fn) -> dict:
     """Find the printer (override > OrcaSlicer profile > remembered), open the protocol that
     answers, and run fn(target, client). Printer problems come back as {error, message, hint, ...};
     once the printer is known, every reply (error or not) says which one it is in `printer`.
-    `bambu`, when given, answers instead for a Bambu Lab printer profile (which has no address
-    to open) through OrcaSlicer's own connection; its None means it could not, and the usual
-    unsupported_connection reply stands."""
+    A Bambu Lab printer profile has no address to open: its client reads through OrcaSlicer's
+    own connection (printer/bambu.py)."""
     target = None
     try:
         target = await _ptarget.resolve_target(_client)
-        target, client = await _ptarget.open_printer(target, _printer_api_key())
+        if target.kind == "bambu":
+            client = _pbambu.BambuClient(_client)
+        else:
+            target, client = await _ptarget.open_printer(target, _printer_api_key())
         async with client:
             out = await fn(target, client)
         if target.source == "remembered" and isinstance(out, dict):
@@ -3919,10 +4097,6 @@ async def _with_printer(fn, bambu=None) -> dict:
                 out["headline"] = _remembered_lead(target) + out["headline"]
         return out
     except PrinterError as e:
-        if bambu is not None and e.details.get("host_type") == "bambu":
-            out = await bambu()
-            if out is not None:
-                return out
         out = e.as_dict()
         if target is not None:
             out.setdefault("printer", target.public())
@@ -3933,15 +4107,22 @@ async def _with_printer(fn, bambu=None) -> dict:
 async def get_printer_status() -> dict:
     """Read what the 3D printer is doing now (state, temperatures, job progress, problems); wait_for_printer waits for a point in a print.
 
-    It reports state (idle, heating, printing, paused, finished, cancelled, error, shutdown,
-    offline), nozzle and bed temperatures with their targets, the current job (file, progress,
-    layer, time elapsed and left, and what the time left is based on), and any problems the
-    printer reports, each in the printer's own words with a plain-English hint for common ones.
-    Relay `headline` as-is. Never invent a cause the printer did not report.
+    It reports state (idle, preparing, heating, printing, paused, finished, cancelled, error,
+    shutdown, offline), nozzle and bed temperatures with their targets, the current job (file,
+    progress, layer, time elapsed and left, and what the time left is based on), and any problems
+    the printer reports, each in the printer's own words with a plain-English hint for common
+    ones. Relay `headline` as-is. Never invent a cause the printer did not report.
 
     Finds the printer from OrcaSlicer's active printer profile (or ORCA_PRINTER_URL), so it needs no
     extra setup once the printer is connected in OrcaSlicer. Klipper (Moonraker) printers report the
-    most; OctoPrint reports basic status. Read-only: it never sends commands to the printer."""
+    most; OctoPrint reports basic status. A Bambu Lab printer (the printer selected in OrcaSlicer's
+    Device tab, read from the state OrcaSlicer's own connection keeps; needs the OrcaSlicer MCP
+    build with bambu_status) reports its stage (bed levelling, changing filament, ...), the
+    printer's own time left, chamber temperature, fans and HMS faults with the printer's own
+    sentence and a wiki link each; the headline starts with the name of the printer read, and
+    `bambu` holds it (`device`) with the raw gcode_state and stage. A warning says when that
+    printer is another model than the printer profile. Read-only: it never sends commands to
+    the printer."""
     return await _with_printer(lambda t, c: take_snapshot(t, c))
 
 
@@ -3950,9 +4131,10 @@ async def wait_for_printer(
     until: Annotated[Literal["heated", "printing", "first_layer_done", "finished"], Field(description=(
         "What to wait for. 'heated': every heater with a target is within 3 °C of it. 'printing': "
         "extrusion has started. OctoPrint reports no extrusion, so there it means the job is "
-        "running with the heaters at temperature. 'first_layer_done': the second layer has begun "
-        "(Klipper only); without layer info from the slicer it is judged from the nozzle height, so "
-        "it is approximate. 'finished': the job completed, was cancelled or errored."))],
+        "running with the heaters at temperature; on a Bambu Lab printer the first layer has begun. "
+        "'first_layer_done': the second layer has begun (Klipper and Bambu Lab); without layer info "
+        "from the slicer it is judged from the nozzle height, so it is approximate. 'finished': "
+        "the job completed, was cancelled or errored."))],
     timeout_s: Annotated[int, Field(description=(
         "Seconds to wait before returning the latest status. Default 300, at most 1800. "
         "Call again to keep waiting."))] = _pwait.DEFAULT_TIMEOUT_S,
@@ -3991,25 +4173,34 @@ async def list_print_history(limit: int = 10) -> dict:
         lambda t, c: _phistory.print_history(t, c, limit, _ptarget.printer_id_for(t)))
 
 
-async def _bambu_ams_check() -> dict | None:
-    """check_printer_match on a Bambu Lab printer profile: the AMS match of the plate's filaments.
-    None when the build cannot read the printer (then the usual 'not supported' reply stands)."""
+async def _bambu_ams_check() -> dict:
+    """check_printer_match on a Bambu Lab printer profile: the AMS match of the plate's filaments."""
+    needs = PrinterError("unsupported_connection",
+                         "check_printer_match on a Bambu Lab printer needs the OrcaSlicer MCP build with the "
+                         "bambu_ams capability.", host_type="bambu")
     try:
         async with _client() as c:
             mapping = await c.get_slot_mapping()
             if not isinstance(mapping, dict) or mapping.get("kind") != "bambu":
-                return None
+                raise needs
             if not mapping.get("supported"):
                 if mapping.get("reason") == "not_supported":
-                    return None
+                    raise PrinterError("unsupported_connection", str(mapping.get("message") or needs.message),
+                                       host_type="bambu")
                 return {"supported": False, "kind": "bambu", "reason": mapping.get("reason"),
-                        "message": mapping.get("message"),
-                        "hint": "Select the printer in OrcaSlicer's Device tab and wait for it to connect."}
+                        "message": mapping.get("message"), "hint": _pbambu.SELECT_HINT}
             return await _bambu_mapping(c, mapping)
+    except NotFound as e:
+        if e.route_missing:
+            raise needs from e
+        raise PrinterError("protocol_error", f"OrcaSlicer answered the tray read with: {e}") from e
     except (UiTimeout, NotReachable) as e:
         return {"supported": False, "kind": "bambu", "reason": "orcaslicer_not_answering", "message": _err(e).get("error")}
-    except ApiError:
-        return None
+    except ApiError as e:
+        raise PrinterError("orca_unreachable", "check_printer_match couldn't read the trays from OrcaSlicer.",
+                           hint=_ptarget.orca_read_hint(
+                               e, "Start OrcaSlicer (MCP build) with the Remote API enabled."),
+                           detail=str(e)) from e
 
 
 @mcp.tool()
@@ -4032,6 +4223,8 @@ async def check_printer_match() -> dict:
     than estimated. Needs OrcaSlicer running.
     """
     async def run(t, c):
+        if t.kind == "bambu":
+            return await _bambu_ams_check()
         if t.kind != "klipper":
             return {"supported": False, "reason": "Only Klipper printers report their settings.",
                     "printer": t.public()}
@@ -4049,7 +4242,7 @@ async def check_printer_match() -> dict:
         out["printer"] = t.public()
         return out
 
-    return await _with_printer(run, bambu=_bambu_ams_check)
+    return await _with_printer(run)
 
 
 # --- Tool annotations (title + read-only/destructive hints) -----------------
@@ -4102,6 +4295,8 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
     "get_printer_slots": ("Get printer trays", True, False),
     "get_filament_slot_mapping": ("Get filament slot mapping", True, False),
     "set_filament_slot_mapping": ("Set filament slot mapping", False, False),
+    "list_printers": ("List the Device tab's printers", True, False),
+    "select_printer": ("Select a printer in the Device tab", False, False),
     "move_object_to_plate": ("Move object to plate", False, False),
     "auto_orient": ("Auto-orient objects", False, False),
     "remember": ("Save a note", False, False),
@@ -4134,8 +4329,8 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
 # Tools that reach outside OrcaSlicer (the printer on the network), and tools that are safe to repeat
 # although they write local state.
 _OPEN_WORLD_TOOLS = frozenset({"get_printer_status", "wait_for_printer", "list_print_history", "check_printer_match",
-                               "sync_presets"})
-_IDEMPOTENT_TOOLS = frozenset({"list_print_history"})
+                               "sync_presets", "select_printer"})
+_IDEMPOTENT_TOOLS = frozenset({"list_print_history", "select_printer"})
 
 
 def _apply_tool_annotations() -> None:

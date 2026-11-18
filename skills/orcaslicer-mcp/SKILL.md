@@ -70,8 +70,12 @@ OrcaSlicer MCP panel, where the user can revert it.
   each filament's slot preset against the AMS tray OrcaSlicer's Send dialog will pick (`match` exact, soft, none):
   relay `headline` and `warnings`, and on a soft match name both filaments and let the user decide.
 - `save_gcode` before printing records the slice so the finished print joins back to its settings.
-- `get_printer_status`, `wait_for_printer` and `list_print_history` read the printer. Starting, stopping or
-  heating a printer is never done without the user's explicit yes.
+- `get_printer_status`, `wait_for_printer` and `list_print_history` read the printer. A Bambu Lab printer is read
+  through OrcaSlicer (the printer selected in its Device tab): status and waiting work, history does not. Starting,
+  stopping or heating a printer is never done without the user's explicit yes.
+- Several Bambu Lab printers: `list_printers` shows the ones OrcaSlicer's Device tab knows and which is selected
+  (the one the tray tools read); `select_printer` switches, like a click there, and waits for the connection.
+  Relay its `profile_check` when present: the printer profile is for another model, so offer `select_preset`.
 
 ## More
 
