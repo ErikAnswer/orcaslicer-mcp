@@ -169,6 +169,10 @@ def circle_compensation_changes(measurements: list[CircleMeasurement], stored: d
             warnings.append(f"{kind}: {', '.join(map(_fmt, beyond))} mm is above {DIAMETER_LIMIT_KEY} = "
                             f"{_fmt(diameter_limit)} mm, so circles that big are not compensated")
         warnings.extend(_speed_warnings(kind, points, stored))
+        uneven = [key for key in (*keys, *limit_keys(kind)) if len(set(_floats(stored.get(key)))) > 1]
+        if uneven:
+            warnings.append(f"{kind}: {', '.join(uneven)} hold several different values in the preset; only "
+                            "the first one was read and every value is written the same")
         fits[kind] = {
             "measurements": len(points),
             "fitted": dict(zip(keys, map(_fmt, fitted))),

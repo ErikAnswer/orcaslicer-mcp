@@ -105,6 +105,13 @@ def test_a_stored_vector_keeps_its_length():
     assert plan.changes["hole_coef_3"] == "0.55,0.55" and plan.changes["hole_limit_max"] == "0.55,0.55"
 
 
+def test_stored_values_that_differ_are_flattened_with_a_warning():
+    stored = STORED | {"hole_coef_3": "0.05,0.1"}
+    plan = circle_compensation_changes([CircleMeasurement("hole", 10, 9.8)], stored, add_to_stored=True)
+    assert plan.changes["hole_coef_3"] == "0.15,0.15"
+    assert any("hole_coef_3 hold several different values" in w for w in plan.warnings)
+
+
 def test_warnings_for_a_poor_fit_a_diameter_over_the_limit_and_another_speed():
     holes = [CircleMeasurement("hole", 10, 9.8), CircleMeasurement("hole", 20, 20.2),
              CircleMeasurement("hole", 30, 29.6), CircleMeasurement("hole", 60, 59.9)]
