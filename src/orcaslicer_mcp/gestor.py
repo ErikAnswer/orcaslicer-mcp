@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import httpx
 
@@ -35,6 +36,7 @@ def load_gestor_config() -> GestorConfig:
 
 class GestorClient:
     def __init__(self, cfg: GestorConfig):
+        self._base_url = cfg.base_url
         self._http = httpx.AsyncClient(base_url=cfg.base_url, timeout=cfg.timeout)
         self._token: str | None = None
 
@@ -118,6 +120,15 @@ class GestorClient:
         resp = await self._mutate("/api/preset-upload", {"Content-Type": "application/json"},
                                   params={"filename": filename}, content=content)
         return self._json(resp).get("preset", {})
+
+    async def upload_scratch_model(self, filename: str, content: bytes) -> dict:
+        """The scratch area keeps a file out of the library and deletes it by itself after a week."""
+        resp = await self._mutate("/api/upload", {"Content-Type": "application/octet-stream"},
+                                  params={"filename": filename, "scratch": "1"}, content=content)
+        return self._json(resp).get("file") or {}
+
+    def scratch_url(self, path: str) -> str:
+        return f"{self._base_url}/api/download?root=scratch&path={quote(path)}"
 
     async def toggle_hold(self, job_id: str) -> None:
         await self._mutate("/api/queue/action", json={"action": "toggleHold", "id": job_id})
