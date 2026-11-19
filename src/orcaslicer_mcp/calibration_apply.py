@@ -28,6 +28,7 @@ class CalibrationChanges:
     changes: dict[str, str]
     previous: dict[str, str | None]
     warnings: list[str] = field(default_factory=list)
+    fits: dict[str, dict] = field(default_factory=dict)
 
 
 def _fmt(value: float) -> str:

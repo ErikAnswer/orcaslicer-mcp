@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Annotated, Literal
 from mcp.server.mcpserver import MCPServer, Image, Context
-from pydantic import Field
+from pydantic import BaseModel, Field
 from mcp.types import ToolAnnotations
 from .config import load_config
 from . import client as _client_mod
@@ -28,6 +28,7 @@ from . import placement
 from .knowledge_index import load_knowledge, search_knowledge
 from .physics_check import run_checks, CHECK_LAYERS
 from .calibration_apply import CalibrationValueError, calibration_changes
+from .circle_fit import CircleMeasurement, circle_compensation_changes, coefficient_keys
 from .circle_test import CircleTestError, build_circle_test
 from .breakdown import build_breakdown
 from .compare import compute_comparison
@@ -3358,18 +3359,43 @@ async def edit_preset(
         return _m4a_err(e)
 
 
+class CircleMeasurementInput(BaseModel):
+    kind: Literal["hole", "peg"] = Field(description="hole for a through hole of the test piece, peg for a pin.")
+    nominal: float = Field(description="Diameter in the model, in mm.")
+    measured: float = Field(description="Diameter measured with the caliper, in mm.")
+    speed: float | None = Field(default=None, description=(
+        "Wall speed the feature was printed at, in mm/s. Only when the piece was printed at several "
+        "speeds; give it for every measurement of that kind or for none."))
+
+
+_CIRCLE_NOT_IN_BUILD = (
+    "this OrcaSlicer build has no circle compensation settings (hole_coef_*, counter_coef_*), so the "
+    "coefficients cannot be saved; update OrcaSlicer to a build with circle compensation and run this again")
+_CIRCLE_ENABLE_NOTE = (
+    "the coefficients only act where enable_circle_compensation is on (process or object setting); "
+    "re-print the test piece with it on to check the result")
+_DRY_RUN_NOTE = ("the physics gate and key guard run only when saving; preview them "
+                 "with check_profile_physics(changes) on the open project")
+
+
 @mcp.tool()
 async def apply_calibration(
     filament: Annotated[str, Field(description="Name of the user filament preset to update, as shown by list_presets.")],
     test: Annotated[Literal["pa_line", "pa_pattern", "pa_tower", "flow_rate", "temp_tower",
-                            "max_volumetric_speed", "retraction", "vfa"],
+                            "max_volumetric_speed", "retraction", "vfa", "circle_compensation"],
                     Field(description="The calibration test the value was read from.")],
-    value: Annotated[float, Field(description="The value picked from the printed test: PA value, flow modifier as printed on the chosen block, temperature in °C, volumetric speed in mm³/s or retraction length in mm.")],
+    value: Annotated[float | None, Field(description="The value picked from the printed test: PA value, flow modifier as printed on the chosen block, temperature in °C, volumetric speed in mm³/s or retraction length in mm. Not used by circle_compensation.")] = None,
     linear: Annotated[bool, Field(description="flow_rate only: True for the linear (YOLO) test, whose blocks show an absolute flow ratio offset instead of a percent.")] = False,
     dry_run: Annotated[bool, Field(description="Return the computed changes without saving anything.")] = False,
     allow_temperature_pairs: Annotated[bool, Field(description=(
         "Save even though OrcaSlicer 2.5's temperature safety check finds the first-layer temperature far "
         "from the other layers' (temp_tower). Only after the user has agreed to those temperatures."))] = False,
+    measurements: Annotated[list[CircleMeasurementInput] | None, Field(description=(
+        "circle_compensation only: the caliper measurements of the piece from create_circle_calibration, "
+        "one per hole and peg measured."))] = None,
+    add_to_stored: Annotated[bool, Field(description=(
+        "circle_compensation only: True when the test piece was printed with the circle compensation on, so "
+        "the fitted coefficients are added to the ones the filament already has instead of replacing them."))] = False,
 ) -> dict:
     """Write the result of a calibration test into a filament preset with the right keys.
 
@@ -3378,7 +3404,13 @@ async def apply_calibration(
     linear=True (both read from the stored preset); temp_tower sets nozzle_temperature;
     max_volumetric_speed sets filament_max_volumetric_speed (pass it already reduced if you want
     a margin); retraction sets the filament's filament_retraction_length override. vfa is
-    refused: it has no preset key. Saving goes through edit_preset, so the physics gate applies
+    refused: it has no preset key. circle_compensation takes measurements instead of value: it
+    fits radial correction = coef_1 x speed + coef_2 x diameter + coef_3 by least squares, holes
+    into hole_coef_1..3 and pegs into counter_coef_1..3 (coef_1 stays 0 without several speeds,
+    coef_2 with a single diameter), and widens hole_limit_* / counter_limit_* when the correction
+    would pass them; `fit` shows the correction per diameter. On a build without circle
+    compensation dry_run still computes and saving answers circle_compensation_not_in_this_build
+    before touching anything. Saving goes through edit_preset, so the physics gate applies
     and unsaved changes in the open project are discarded (the calibration generator's temporary
     overrides never reach the preset). Use dry_run=True first to show the user the change."""
     try:
@@ -3386,17 +3418,32 @@ async def apply_calibration(
             stored = (await c.get_preset_config("filament", filament)).get("config", {})
     except ApiError as e:
         return _m4a_err(e)
+    circle = test == "circle_compensation"
     try:
-        plan = calibration_changes(test, value, stored, linear)
+        if circle:
+            plan = circle_compensation_changes(
+                [CircleMeasurement(m.kind, m.nominal, m.measured, m.speed) for m in measurements or []],
+                stored, add_to_stored)
+        elif value is None:
+            raise CalibrationValueError(f"{test} needs a value")
+        else:
+            plan = calibration_changes(test, value, stored, linear)
     except CalibrationValueError as e:
         return {"error": "invalid_calibration_value", "detail": str(e)}
     out = {"filament": filament, "test": test, "changes": plan.changes, "previous": plan.previous}
     if plan.warnings:
         out["warnings"] = plan.warnings
+    in_build = True
+    if circle:
+        in_build = all(key in stored for kind in plan.fits for key in coefficient_keys(kind))
+        out |= {"fit": plan.fits, "add_to_stored": add_to_stored, "enable": _CIRCLE_ENABLE_NOTE}
+        if not in_build:
+            out["circle_compensation"] = "not_in_this_build"
     if dry_run:
         return out | {"dry_run": True,
-                      "note": "the physics gate and key guard run only when saving; preview them "
-                              "with check_profile_physics(changes) on the open project"}
+                      "note": _DRY_RUN_NOTE if in_build else f"{_CIRCLE_NOT_IN_BUILD}; {_DRY_RUN_NOTE}"}
+    if not in_build:
+        return out | {"error": "circle_compensation_not_in_this_build", "detail": _CIRCLE_NOT_IN_BUILD}
     saved = await edit_preset("filament", filament, plan.changes,
                               allow_temperature_pairs=allow_temperature_pairs)
     if saved.get("error"):
