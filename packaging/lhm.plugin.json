@@ -118,6 +118,10 @@
       "description": "Create a calibration test exactly like OrcaSlicer's Calibration menu."
     },
     {
+      "name": "create_circle_calibration",
+      "description": "Add the circle compensation test piece to the plate: a plate with through holes and a strip with pegs of the given diameters."
+    },
+    {
       "name": "send_to_queue",
       "description": "Send the sliced current plate to the home print queue through the selected printer preset's own Flashforge send (the send dialog's defaults and automatic material-slot mapping, without the dialog)."
     },

@@ -28,6 +28,7 @@ from . import placement
 from .knowledge_index import load_knowledge, search_knowledge
 from .physics_check import run_checks, CHECK_LAYERS
 from .calibration_apply import CalibrationValueError, calibration_changes
+from .circle_test import CircleTestError, build_circle_test
 from .breakdown import build_breakdown
 from .compare import compute_comparison
 from .gestor import GestorClient, GestorError, load_gestor_config
@@ -1723,6 +1724,100 @@ async def create_calibration(
             return out
     except ApiError as e:
         return _calibration_err(e)
+
+
+_CIRCLE_KEYS = ("enable_circle_compensation", "xy_hole_compensation", "xy_contour_compensation")
+_CIRCLE_MEASURE = (
+    "After printing, measure every hole of the plate and every peg of the strip with a caliper, above the first "
+    "layers, across two perpendicular directions, and average the two readings of each one. Holes and pegs "
+    "go from the smallest to the largest diameter, in the same order.")
+_CIRCLE_XY_NOTE = (
+    "the process keeps its XY hole and contour compensation, which adds to the circle compensation: the "
+    "coefficients will correct what is left with these values, so print with the same ones afterwards")
+
+
+def _circle_compensation_state(config: dict) -> dict:
+    state = {k: config[k] for k in _CIRCLE_KEYS[1:] if k in config}
+    if any(_is_nonzero(v) for v in state.values()):
+        state["note"] = _CIRCLE_XY_NOTE
+    return state
+
+
+def _is_nonzero(value) -> bool:
+    try:
+        return float(value) != 0
+    except (TypeError, ValueError):
+        return True
+
+
+@mcp.tool()
+async def create_circle_calibration(
+    diameters: Annotated[list[float] | None, Field(description=(
+        "Diameters in mm of the holes and pegs, each one once. Omit for 3, 5, 10, 20, 30 and 45."))] = None,
+    tool: Annotated[int | None, Field(ge=1, description="1-based extruder/head that prints the test piece.")] = None,
+) -> dict:
+    """Add the circle compensation test piece to the plate: a plate with through holes and a strip with pegs of the given diameters.
+
+    The piece is built here, uploaded to the Gestor 3D scratch area (kept out of the library and
+    deleted by itself after a week) and loaded from there, so it is added to the current plate
+    like load_model does and replaces nothing. The test object gets enable_circle_compensation
+    off as a per-object setting, so it prints uncorrected whatever the presets say; an OrcaSlicer
+    build without that setting has nothing to turn off and the reply says so
+    (circle_compensation: not_in_this_build). The process's xy_hole_compensation and
+    xy_contour_compensation stay as they are and come back under `compensation`. Afterwards
+    arrange_plate if other objects are on the plate, slice_and_wait, and send only when the user
+    asks. `measure` says how to measure the print; `features` lists the nominal diameters."""
+    try:
+        test = build_circle_test(diameters)
+    except CircleTestError as e:
+        return {"error": "invalid_diameters", "detail": str(e)}
+    filename = "circle-test-" + "-".join(f"{d:g}" for d in test.diameters) + ".stl"
+    try:
+        async with GestorClient(load_gestor_config()) as g:
+            uploaded = await g.upload_scratch_model(filename, test.stl)
+            path = uploaded.get("path")
+            if not path:
+                return {"error": "gestor_error", "detail": "the Gestor 3D stored the piece but did not say where"}
+            url = g.scratch_url(path)
+    except GestorError as e:
+        return {"error": "gestor_error", "status": e.status, "detail": f"{e}; nothing was loaded"}
+    out: dict = {"url": url, "diameters_mm": list(test.diameters), "size_mm": list(test.size_mm),
+                 "features": [{"kind": kind, "diameter_mm": d} for kind in ("hole", "peg") for d in test.diameters],
+                 "measure": _CIRCLE_MEASURE}
+    try:
+        async with _client() as c:
+            loaded = await c.load_model(url)
+            indexes = [o.get("index") for o in loaded.get("objects") or []]
+            listed = (await c.get_objects()).get("objects") or []
+            ids = [listed[i]["id"] for i in indexes if isinstance(i, int) and i < len(listed)]
+            config = await c.get_config(list(_CIRCLE_KEYS))
+            changes: dict = {}
+            if _CIRCLE_KEYS[0] in config:
+                changes[_CIRCLE_KEYS[0]] = 0
+                out["circle_compensation"] = "off_for_this_object"
+            else:
+                out["circle_compensation"] = "not_in_this_build"
+            if tool is not None:
+                changes["extruder"] = tool
+                out["tool"] = tool
+            out["compensation"] = _circle_compensation_state(config)
+            out["objects"] = ids
+            if changes and not ids:
+                return out | {"error": "object_not_found",
+                              "detail": "the piece is on the plate but its object id could not be read; find it with "
+                                        f"list_objects and set {changes} with set_object_config before slicing"}
+            configured = []
+            try:
+                for obj_id in ids if changes else []:
+                    await c.set_object_config(obj_id, changes)
+                    configured.append(obj_id)
+            except ApiError as e:
+                return _err(e) | out | {"configured_objects": configured,
+                                        "detail": "the piece is on the plate but its per-object settings were not all "
+                                                  f"written; set {changes} with set_object_config before slicing"}
+            return out
+    except ApiError as e:
+        return _err(e) | {"url": url}
 
 
 QUEUE_CONFIRM_ATTEMPTS = 5
@@ -4286,6 +4381,7 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
     "cancel_slice": ("Cancel running slice", False, False),
     "set_object_config": ("Set per-object config", False, False),
     "create_calibration": ("Create calibration test", False, True),
+    "create_circle_calibration": ("Add the circle compensation test piece", False, False),
     "send_to_queue": ("Send plate to print queue", False, False),
     "duplicate_object": ("Duplicate object", False, False),
     "transform_object": ("Transform object", False, False),
@@ -4329,7 +4425,7 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
 # Tools that reach outside OrcaSlicer (the printer on the network), and tools that are safe to repeat
 # although they write local state.
 _OPEN_WORLD_TOOLS = frozenset({"get_printer_status", "wait_for_printer", "list_print_history", "check_printer_match",
-                               "sync_presets", "select_printer"})
+                               "sync_presets", "select_printer", "create_circle_calibration"})
 _IDEMPOTENT_TOOLS = frozenset({"list_print_history", "select_printer"})
 
 

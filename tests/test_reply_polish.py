@@ -83,7 +83,7 @@ def test_describe_setting_unknown_key_has_a_detail():
 
 def test_every_first_description_line_is_a_whole_sentence():
     tools = anyio.run(srv.mcp.list_tools)
-    assert len(tools) == 70
+    assert len(tools) == 71
     for t in tools:
         first = t.description.split("\n", 1)[0].strip()
         assert first.endswith("."), t.name
