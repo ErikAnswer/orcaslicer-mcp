@@ -72,6 +72,7 @@ async def test_refused_object_setting_keeps_the_piece_and_says_what_is_missing()
     obj.mock(return_value=httpx.Response(409, json={"error": "busy"}))
     out = await srv.create_circle_calibration([5, 10])
     assert out["error"] and out["objects"] == [9] and out["configured_objects"] == []
+    assert out["circle_compensation"] == "not_applied" and "tool" not in out
     assert "set_object_config" in out["detail"]
 
 
@@ -101,5 +102,24 @@ async def test_piece_whose_object_id_cannot_be_read_is_reported():
     _gestor()
     _slicer({"enable_circle_compensation": "0"})
     respx.get(f"{BASE}/objects").mock(return_value=httpx.Response(200, json={"count": 0, "objects": []}))
-    out = await srv.create_circle_calibration([5, 10])
+    out = await srv.create_circle_calibration([5, 10], tool=3)
     assert out["error"] == "object_not_found" and out["objects"] == [] and "list_objects" in out["detail"]
+    assert out["circle_compensation"] == "not_applied" and "tool" not in out and "'extruder': 3" in out["detail"]
+
+
+@respx.mock
+async def test_upload_answer_without_a_path_loads_nothing():
+    _gestor().mock(return_value=httpx.Response(201, json={"file": {}}))
+    model = respx.post(f"{BASE}/model").mock(return_value=httpx.Response(200, json={}))
+    out = await srv.create_circle_calibration([5, 10])
+    assert out["error"] == "gestor_error" and not model.called
+
+
+@respx.mock
+async def test_failure_after_loading_says_the_piece_is_on_the_plate():
+    _gestor()
+    _slicer({"enable_circle_compensation": "0"})
+    respx.get(f"{BASE}/objects").mock(return_value=httpx.Response(500, json={"error": "boom"}))
+    out = await srv.create_circle_calibration([5, 10])
+    assert out["error"] and out["loaded"] is True and out["url"] == URL
+    assert "do not load it again" in out["detail"]

@@ -1784,9 +1784,11 @@ async def create_circle_calibration(
     out: dict = {"url": url, "diameters_mm": list(test.diameters), "size_mm": list(test.size_mm),
                  "features": [{"kind": kind, "diameter_mm": d} for kind in ("hole", "peg") for d in test.diameters],
                  "measure": _CIRCLE_MEASURE}
+    on_plate = False
     try:
         async with _client() as c:
             loaded = await c.load_model(url)
+            on_plate = True
             indexes = [o.get("index") for o in loaded.get("objects") or []]
             listed = (await c.get_objects()).get("objects") or []
             ids = [listed[i]["id"] for i in indexes if isinstance(i, int) and i < len(listed)]
@@ -1794,12 +1796,9 @@ async def create_circle_calibration(
             changes: dict = {}
             if _CIRCLE_KEYS[0] in config:
                 changes[_CIRCLE_KEYS[0]] = 0
-                out["circle_compensation"] = "off_for_this_object"
-            else:
-                out["circle_compensation"] = "not_in_this_build"
             if tool is not None:
                 changes["extruder"] = tool
-                out["tool"] = tool
+            out["circle_compensation"] = "not_applied" if _CIRCLE_KEYS[0] in changes else "not_in_this_build"
             out["compensation"] = _circle_compensation_state(config)
             out["objects"] = ids
             if changes and not ids:
@@ -1815,9 +1814,19 @@ async def create_circle_calibration(
                 return _err(e) | out | {"configured_objects": configured,
                                         "detail": "the piece is on the plate but its per-object settings were not all "
                                                   f"written; set {changes} with set_object_config before slicing"}
+            if _CIRCLE_KEYS[0] in changes:
+                out["circle_compensation"] = "off_for_this_object"
+            if tool is not None:
+                out["tool"] = tool
             return out
     except ApiError as e:
-        return _err(e) | {"url": url}
+        if not on_plate:
+            return _err(e) | {"url": url}
+        return _err(e) | {"url": url, "loaded": True,
+                          "detail": "the piece is already on the plate, so do not load it again, but its per-object "
+                                    "settings were not written; find it with list_objects and set "
+                                    "enable_circle_compensation to 0 (and extruder, when a tool was asked for) with "
+                                    "set_object_config before slicing"}
 
 
 QUEUE_CONFIRM_ATTEMPTS = 5
