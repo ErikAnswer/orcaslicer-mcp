@@ -164,6 +164,7 @@ def test_every_tool_is_honest_about_the_plugin(folder, plugin, gestor, monkeypat
             print(f"  {name}: {rows[name][:220]!r}")
     assert EXPECT_WORKS <= set(buckets["works"]), EXPECT_WORKS - set(buckets["works"])
     assert ("GET", "/api/download") in gestor.seen, gestor.seen
-    synced = rows["sync_presets"]
-    assert "only_gestor" in synced and "only_pc" in synced, synced
+    synced = {row["name"]: row["status"] for row in json.loads(rows["sync_presets"])["presets"]}
+    assert synced[GESTOR_PRESET["name"]] == "only_gestor", synced
+    assert synced["My Fast"] == "only_pc", synced
     assert buckets["other"] == [], buckets["other"]
