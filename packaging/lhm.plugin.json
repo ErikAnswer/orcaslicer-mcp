@@ -122,6 +122,10 @@
       "description": "Add the circle compensation test piece to the plate: a plate with through holes and a strip with pegs of the given diameters."
     },
     {
+      "name": "create_tool_offset_calibration",
+      "description": "Add the XY offset test between two tool heads to the plate: a vernier scale along X and another along Y, each with one comb per head."
+    },
+    {
       "name": "send_to_queue",
       "description": "Send the sliced current plate to the home print queue through the selected printer preset's own Flashforge send (the send dialog's defaults and automatic material-slot mapping, without the dialog)."
     },

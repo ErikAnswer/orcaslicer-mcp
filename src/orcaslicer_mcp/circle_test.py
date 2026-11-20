@@ -113,8 +113,8 @@ def _normal(a: Point3, b: Point3, c: Point3) -> Point3:
     return (n[0] / length, n[1] / length, n[2] / length) if length else (0.0, 0.0, 0.0)
 
 
-def _binary_stl(triangles: list[Triangle]) -> bytes:
-    out = bytearray(b"circle compensation test".ljust(80, b" "))
+def binary_stl(triangles: list[Triangle], header: bytes = b"circle compensation test") -> bytes:
+    out = bytearray(header.ljust(80, b" "))
     out += struct.pack("<I", len(triangles))
     for a, b, c in triangles:
         out += struct.pack("<12fH", *_normal(a, b, c), *a, *b, *c, 0)
@@ -130,4 +130,4 @@ def build_circle_test(diameters=None) -> CircleTest:
     triangles = _body(edges, 0.0, depth, PLATE_THICKNESS, values, pegs=False)
     triangles += _body(edges, depth + BODY_GAP, 2 * depth + BODY_GAP, STRIP_THICKNESS, values, pegs=True)
     size = (edges[-1], 2 * depth + BODY_GAP, STRIP_THICKNESS + PEG_HEIGHT)
-    return CircleTest(_binary_stl(triangles), values, size)
+    return CircleTest(binary_stl(triangles), values, size)

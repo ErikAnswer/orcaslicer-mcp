@@ -30,6 +30,7 @@ from .physics_check import run_checks, CHECK_LAYERS
 from .calibration_apply import CalibrationValueError, calibration_changes
 from .circle_fit import CircleMeasurement, circle_compensation_changes, coefficient_keys
 from .circle_test import CircleTestError, build_circle_test
+from .tool_offset_test import ToolOffsetTestError, build_tool_offset_test
 from .breakdown import build_breakdown
 from .compare import compute_comparison
 from .gestor import GestorClient, GestorError, load_gestor_config
@@ -1828,6 +1829,122 @@ async def create_circle_calibration(
                                     "settings were not written; find it with list_objects and set "
                                     "enable_circle_compensation to 0 (and extruder, when a tool was asked for) with "
                                     "set_object_config before slicing"}
+
+
+_TOOL_OFFSET_READ = (
+    "Read both scales on the plate, before removing the print. Each scale is two facing combs; look for the pair "
+    "of teeth that forms one straight line. Count that pair from the centre one, which is the tooth behind the "
+    "long tab: 0 at the centre, positive toward the short tab (to the right on the X scale, the one that runs "
+    "left to right; to the back on the Y scale), negative the other way. A half value is fine when two "
+    "neighbouring pairs look equally good. The tool prints -reading x step_mm away from the reference on that axis.")
+_TOOL_OFFSET_KEEP = (
+    "the two objects are placed against each other to the hundredth of a millimetre: do not arrange_plate, "
+    "auto_orient or move only one of them; to move the test, give both the same translate")
+_TOOL_OFFSET_CLEANUP = "delete the objects listed here with delete_object and run this again"
+_TOOL_OFFSET_TOLERANCE_MM = 0.001
+
+
+def _head_count(config: dict) -> int | None:
+    nozzles = config.get("nozzle_diameter")
+    if isinstance(nozzles, str) and nozzles:
+        return len(nozzles.split(","))
+    return len(nozzles) if isinstance(nozzles, list) and nozzles else None
+
+
+def _object_offset(listed: list, obj_id: int) -> list[float] | None:
+    for obj in listed:
+        offset = (obj.get("transform") or {}).get("offset")
+        if obj.get("id") == obj_id and isinstance(offset, list) and len(offset) >= 2:
+            return offset
+    return None
+
+
+async def _load_for_head(c, url: str, head: int) -> int | None:
+    loaded = await c.load_model(url)
+    indexes = [o.get("index") for o in loaded.get("objects") or []]
+    listed = (await c.get_objects()).get("objects") or []
+    ids = [listed[i]["id"] for i in indexes if isinstance(i, int) and i < len(listed)]
+    if len(ids) != 1:
+        return None
+    await c.set_object_config(ids[0], {"extruder": head})
+    return ids[0]
+
+
+async def _place_against(c, reference_id: int, tool_id: int, delta: tuple[float, float]) -> bool:
+    listed = (await c.get_objects()).get("objects") or []
+    reference, tool = _object_offset(listed, reference_id), _object_offset(listed, tool_id)
+    if reference is None or tool is None:
+        return False
+    target = [reference[0] + delta[0], reference[1] + delta[1]]
+    await c.transform_object(tool_id, [target[0] - tool[0], target[1] - tool[1], 0.0])
+    placed = _object_offset((await c.get_objects()).get("objects") or [], tool_id)
+    return placed is not None and all(abs(placed[i] - target[i]) <= _TOOL_OFFSET_TOLERANCE_MM for i in (0, 1))
+
+
+@mcp.tool()
+async def create_tool_offset_calibration(
+    reference_tool: Annotated[int, Field(ge=1, description="1-based extruder/head the other one is compared with.")],
+    tool: Annotated[int, Field(ge=1, description="1-based extruder/head whose XY offset is being checked.")],
+    step: Annotated[float | None, Field(description=(
+        "Resolution of the scales in mm, 0.02 to 0.2; the test reads up to ten steps each way. Omit for 0.05."))] = None,
+) -> dict:
+    """Add the XY offset test between two tool heads to the plate: a vernier scale along X and another along Y, each with one comb per head.
+
+    The reference head prints teeth every 2 mm and the other head prints the facing teeth every
+    2 mm + step, so the pair of teeth that lines up tells how far the other head prints from
+    where it should, in steps. The two pieces are built here, uploaded to the Gestor 3D scratch
+    area (out of the library, deleted by itself after a week), loaded like load_model does
+    without replacing anything, assigned to their heads and placed against each other; `aligned`
+    confirms the placement. Use an empty plate. Afterwards slice_and_wait and check get_gcode:
+    only the two heads asked for, each at the temperature of its own filament. `read` says how
+    to read the print and `keep_together` what would spoil the placement. On a printer that
+    stores the head offsets itself, such as the Creator 5 Pro, a reading other than 0 means its
+    own offset calibration should be run again; the printer preset's extruder_offset is not
+    touched."""
+    if reference_tool == tool:
+        return {"error": "same_tool", "detail": "the test compares two different heads; pick another tool"}
+    try:
+        test = build_tool_offset_test(step)
+    except ToolOffsetTestError as e:
+        return {"error": "invalid_step", "detail": str(e)}
+    out: dict = {"reference_tool": reference_tool, "tool": tool, "step_mm": test.step, "range_mm": test.range_mm,
+                 "teeth_per_side": test.teeth_per_side, "size_mm": list(test.size_mm), "objects": {}}
+    pieces = (("reference", reference_tool, test.reference_stl), ("tool", tool, test.tool_stl))
+    delta = (test.tool_center[0] - test.reference_center[0], test.tool_center[1] - test.reference_center[1])
+    try:
+        async with GestorClient(load_gestor_config()) as g:
+            urls = []
+            for role, head, stl in pieces:
+                uploaded = await g.upload_scratch_model(f"tool-offset-{role}-T{head}-{test.step:g}.stl", stl)
+                if not uploaded.get("path"):
+                    return {"error": "gestor_error",
+                            "detail": "the Gestor 3D stored the piece but did not say where; nothing was loaded"}
+                urls.append(g.scratch_url(uploaded["path"]))
+    except GestorError as e:
+        return {"error": "gestor_error", "status": e.status, "detail": f"{e}; nothing was loaded"}
+    try:
+        async with _client() as c:
+            heads = _head_count(await c.get_config(["nozzle_diameter"]))
+            if heads is not None and max(reference_tool, tool) > heads:
+                return {"error": "no_such_tool", "heads": heads,
+                        "detail": f"the selected printer has {heads} head(s); nothing was loaded"}
+            for (role, head, _), url in zip(pieces, urls):
+                obj_id = await _load_for_head(c, url, head)
+                if obj_id is None:
+                    return out | {"error": "object_not_found",
+                                  "detail": f"the {role} piece is on the plate but its object id could not be read; "
+                                            "find the test objects with list_objects, delete them and run this again"}
+                out["objects"][role] = obj_id
+            out["aligned"] = await _place_against(c, out["objects"]["reference"], out["objects"]["tool"], delta)
+            if not out["aligned"]:
+                return out | {"error": "not_aligned",
+                              "detail": "the two pieces could not be placed against each other, so the test would "
+                                        f"read wrong; {_TOOL_OFFSET_CLEANUP}"}
+            return out | {"read": _TOOL_OFFSET_READ, "keep_together": _TOOL_OFFSET_KEEP}
+    except ApiError as e:
+        if not out["objects"]:
+            return _err(e)
+        return _err(e) | out | {"detail": f"the test was left half made on the plate; {_TOOL_OFFSET_CLEANUP}"}
 
 
 QUEUE_CONFIRM_ATTEMPTS = 5
@@ -4438,6 +4555,7 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
     "set_object_config": ("Set per-object config", False, False),
     "create_calibration": ("Create calibration test", False, True),
     "create_circle_calibration": ("Add the circle compensation test piece", False, False),
+    "create_tool_offset_calibration": ("Add the XY offset test between two tool heads", False, False),
     "send_to_queue": ("Send plate to print queue", False, False),
     "duplicate_object": ("Duplicate object", False, False),
     "transform_object": ("Transform object", False, False),
@@ -4481,7 +4599,8 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
 # Tools that reach outside OrcaSlicer (the printer on the network), and tools that are safe to repeat
 # although they write local state.
 _OPEN_WORLD_TOOLS = frozenset({"get_printer_status", "wait_for_printer", "list_print_history", "check_printer_match",
-                               "sync_presets", "select_printer", "create_circle_calibration"})
+                               "sync_presets", "select_printer", "create_circle_calibration",
+                               "create_tool_offset_calibration"})
 _IDEMPOTENT_TOOLS = frozenset({"list_print_history", "select_printer"})
 
 
