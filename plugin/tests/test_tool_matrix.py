@@ -7,10 +7,13 @@ has a path that does not know about the plugin. Run with ORCASLICER_MCP_SRC poin
 that has the plugin-aware errors (orcaslicer-mcp branch plugin-update); skipped otherwise.
 """
 import asyncio
+import http.server
 import json
 import os
 import pathlib
 import sys
+import threading
+import urllib.parse
 
 import pytest
 
@@ -41,10 +44,12 @@ ARGS = {
 }
 # Tools that talk to the printer, not OrcaSlicer (the fake printer address is unreachable).
 PRINTER_TOOLS = {"check_printer_match", "get_printer_status", "list_print_history", "wait_for_printer"}
-# Tools that talk to the Gestor 3D print queue, not OrcaSlicer (the test points them at a closed port).
-GESTOR_TOOLS = {"sync_presets", "create_circle_calibration", "create_tool_offset_calibration"}
+# Tools that upload to the Gestor 3D print queue before they reach OrcaSlicer (the fake Gestor refuses writes).
+GESTOR_TOOLS = {"create_circle_calibration", "create_tool_offset_calibration"}
+GESTOR_PRESET = {"kind": "process", "name": "Gestor Only", "path": "process/Gestor Only.json"}
+GESTOR_PRESET_FILE = {"name": "Gestor Only", "type": "process", "inherits": "", "layer_height": "0.2"}
 EXPECT_WORKS = {"get_status", "get_config", "set_config", "list_presets", "get_preset_config",
-                "select_preset", "list_objects", "get_project",
+                "select_preset", "list_objects", "get_project", "sync_presets",
                 # after the user pressed Slice plate (plugin 0.2.0)
                 "get_slice_status", "get_slice_warnings", "get_gcode", "describe_plate", "save_gcode"}
 READS_THE_SLICE = {"get_slice_status", "get_slice_warnings", "get_slice_breakdown", "get_gcode",
@@ -69,7 +74,49 @@ def _text(result) -> str:
     return " ".join(getattr(c, "text", None) or json.dumps(c, default=str) for c in content)
 
 
-def test_every_tool_is_honest_about_the_plugin(folder, plugin, monkeypatch, capsys, tmp_path):
+class _FakeGestor(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        url = urllib.parse.urlsplit(self.path)
+        self.server.seen.append(("GET", url.path))
+        wanted = urllib.parse.parse_qs(url.query).get("path")
+        if url.path == "/api/state":
+            self._answer(200, {"presets": [GESTOR_PRESET]})
+        elif url.path == "/api/download" and wanted == [GESTOR_PRESET["path"]]:
+            self._answer(200, GESTOR_PRESET_FILE)
+        else:
+            self._answer(404, {"error": "not found"})
+
+    def do_POST(self):
+        self.server.seen.append(("POST", urllib.parse.urlsplit(self.path).path))
+        self._answer(404, {"error": "not found"})
+
+    def _answer(self, status, body):
+        data = json.dumps(body).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
+    def log_message(self, *args):
+        pass
+
+
+@pytest.fixture
+def gestor():
+    """A Gestor 3D that only lists and serves one preset: no mutation token, every write refused."""
+    httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeGestor)
+    httpd.seen = []
+    thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+    thread.start()
+    httpd.base = f"http://127.0.0.1:{httpd.server_address[1]}"
+    yield httpd
+    httpd.shutdown()
+    httpd.server_close()
+    thread.join()
+
+
+def test_every_tool_is_honest_about_the_plugin(folder, plugin, gestor, monkeypatch, capsys, tmp_path):
     import lzma
     from conftest import gcode_file, slice_now
     gcode = gcode_file(folder, lzma.open(CUBE, "rt").read())
@@ -77,7 +124,7 @@ def test_every_tool_is_honest_about_the_plugin(folder, plugin, monkeypatch, caps
     monkeypatch.setenv("ORCA_API_URL", plugin.base)
     monkeypatch.setenv("ORCA_API_TOKEN", plugin._token)
     monkeypatch.setenv("ORCA_API_TIMEOUT", "15")
-    monkeypatch.setenv("ORCA_GESTOR_URL", "http://127.0.0.1:9")
+    monkeypatch.setenv("ORCA_GESTOR_URL", gestor.base)
     for k in ("ORCA_PRINTER_URL", "ORCA_PRINTER_API_KEY"):
         monkeypatch.delenv(k, raising=False)
     from orcaslicer_mcp import server
@@ -116,4 +163,8 @@ def test_every_tool_is_honest_about_the_plugin(folder, plugin, monkeypatch, caps
         for name in buckets["other"]:
             print(f"  {name}: {rows[name][:220]!r}")
     assert EXPECT_WORKS <= set(buckets["works"]), EXPECT_WORKS - set(buckets["works"])
+    assert ("GET", "/api/download") in gestor.seen, gestor.seen
+    synced = {row["name"]: row["status"] for row in json.loads(rows["sync_presets"])["presets"]}
+    assert synced[GESTOR_PRESET["name"]] == "only_gestor", synced
+    assert synced["My Fast"] == "only_pc", synced
     assert buckets["other"] == [], buckets["other"]
