@@ -1,6 +1,6 @@
 # Tools
 
-72 tools, plus three ready-made prompts (`slice-a-model`, `optimize-print-time`, `edit-preset-safely`) and the settings reference as MCP resources.
+73 tools, plus three ready-made prompts (`slice-a-model`, `optimize-print-time`, `edit-preset-safely`) and the settings reference as MCP resources.
 
 | | | |
 |---|---|---|
