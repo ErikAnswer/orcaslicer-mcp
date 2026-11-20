@@ -126,6 +126,10 @@
       "description": "Add the XY offset test between two tool heads to the plate: a vernier scale along X and another along Y, each with one comb per head."
     },
     {
+      "name": "read_tool_offset_calibration",
+      "description": "Turn the reading of the XY offset test between two tool heads into the measured offset and its correction, in mm."
+    },
+    {
       "name": "send_to_queue",
       "description": "Send the sliced current plate to the home print queue through the selected printer preset's own Flashforge send (the send dialog's defaults and automatic material-slot mapping, without the dialog)."
     },
