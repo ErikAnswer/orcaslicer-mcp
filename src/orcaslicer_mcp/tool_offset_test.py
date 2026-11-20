@@ -9,6 +9,8 @@ that lines up is the one at index -d / step. The reference comb carries a long t
 centre tooth and a short one behind tooth +PLUS_TAB_TOOTH, which tells the positive direction.
 
 Each head gets its own binary STL holding its comb of both scales, in shared coordinates.
+
+read_tool_offset turns the pair read on each scale back into that offset.
 """
 from __future__ import annotations
 
@@ -51,6 +53,25 @@ class ToolOffsetTest:
     step: float
     teeth_per_side: int
     range_mm: float
+
+
+@dataclass(frozen=True)
+class AxisOffset:
+    reading: float
+    offset_mm: float
+    correction_mm: float
+    at_scale_end: bool
+
+
+@dataclass(frozen=True)
+class ToolOffsetReading:
+    step: float
+    x: AxisOffset
+    y: AxisOffset
+
+    @property
+    def lined_up(self) -> bool:
+        return self.x.reading == 0 and self.y.reading == 0
 
 
 def checked_step(step) -> float:
@@ -155,3 +176,31 @@ def build_tool_offset_test(step=None) -> ToolOffsetTest:
         teeth_per_side=TEETH_PER_SIDE,
         range_mm=round(TEETH_PER_SIDE * value, 6),
     )
+
+
+def _plain(value: float) -> float:
+    return round(value, 6) + 0.0
+
+
+def _axis_offset(axis: str, reading, step: float) -> AxisOffset:
+    try:
+        value = float(reading)
+    except (TypeError, ValueError) as e:
+        raise ToolOffsetTestError(f"the {axis} reading must be a number of teeth, got {reading!r}") from e
+    if not (math.isfinite(value) and abs(value) <= TEETH_PER_SIDE):
+        raise ToolOffsetTestError(
+            f"the {axis} reading must be between -{TEETH_PER_SIDE} and {TEETH_PER_SIDE} teeth, the range of the "
+            f"test (\u00b1{TEETH_PER_SIDE * step:g} mm at a step of {step:g} mm), got {reading!r}; when no pair "
+            "lines up the offset is beyond the test: run the printer's own offset calibration, or print the "
+            "test again with a larger step")
+    if value * 2 != round(value * 2):
+        raise ToolOffsetTestError(
+            f"the {axis} reading must be a whole tooth or a half, got {reading!r}; pick the pair that lines up "
+            "best, or the half between two pairs that look equally good")
+    offset = _plain(-value * step)
+    return AxisOffset(_plain(value), offset, _plain(-offset), abs(value) == TEETH_PER_SIDE)
+
+
+def read_tool_offset(x_reading, y_reading, step=None) -> ToolOffsetReading:
+    value = checked_step(step)
+    return ToolOffsetReading(value, _axis_offset("X", x_reading, value), _axis_offset("Y", y_reading, value))

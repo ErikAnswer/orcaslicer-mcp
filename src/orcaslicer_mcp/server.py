@@ -30,7 +30,7 @@ from .physics_check import run_checks, CHECK_LAYERS
 from .calibration_apply import CalibrationValueError, calibration_changes
 from .circle_fit import CircleMeasurement, circle_compensation_changes, coefficient_keys
 from .circle_test import CircleTestError, build_circle_test
-from .tool_offset_test import ToolOffsetTestError, build_tool_offset_test
+from .tool_offset_test import ToolOffsetTestError, build_tool_offset_test, checked_step, read_tool_offset
 from .breakdown import build_breakdown
 from .compare import compute_comparison
 from .gestor import GestorClient, GestorError, load_gestor_config
@@ -1836,7 +1836,8 @@ _TOOL_OFFSET_READ = (
     "of teeth that forms one straight line. Count that pair from the centre one, which is the tooth behind the "
     "long tab: 0 at the centre, positive toward the short tab (to the right on the X scale, the one that runs "
     "left to right; to the back on the Y scale), negative the other way. A half value is fine when two "
-    "neighbouring pairs look equally good. The tool prints -reading x step_mm away from the reference on that axis.")
+    "neighbouring pairs look equally good. The tool prints -reading x step_mm away from the reference on that "
+    "axis; read_tool_offset_calibration turns both readings into the offset and how to correct it.")
 _TOOL_OFFSET_KEEP = (
     "the two objects are placed against each other to the hundredth of a millimetre: do not arrange_plate, "
     "auto_orient or move only one of them; to move the test, give both the same translate")
@@ -1945,6 +1946,81 @@ async def create_tool_offset_calibration(
         if not out["objects"]:
             return _err(e)
         return _err(e) | out | {"detail": f"the test was left half made on the plate; {_TOOL_OFFSET_CLEANUP}"}
+
+
+_TOOL_OFFSET_LINED_UP = (
+    "both centre pairs line up, so the two heads agree to within half a step; there is nothing to correct")
+_TOOL_OFFSET_FIRMWARE_STEP = (
+    "On a printer that stores the head offsets itself (the Creator 5 Pro: screen, Calibrate, Extruder Offset; it "
+    "has no field to type a value), run its own offset calibration again and print this test again.")
+_TOOL_OFFSET_ORCA_STEP = (
+    "Only when the same reading stays after that, or the printer leaves the offsets to the slicer: add "
+    "orca_extruder_offset.add_mm to the Extruder offset of head {tool} in the printer preset (Printer settings, "
+    "Extruder {tool}), leave head {reference} as it is, and print the test again to confirm the centre pairs "
+    "line up.")
+_TOOL_OFFSET_ORCA_NOTE = (
+    "OrcaSlicer subtracts extruder_offset from the coordinates it sends, so the value to add is the measured "
+    "offset itself, with its sign. It adds to whatever the printer firmware already applies: put it back to "
+    "what it was (0 on the Creator 5 Pro) whenever the printer's own offset calibration is run again. Nothing "
+    "was written; changing a printer preset is the user's decision.")
+_TOOL_OFFSET_AT_END = (
+    "the {axis} reading is the last pair of the scale, so the real offset may be larger than the test can "
+    "show; run the printer's own offset calibration first, or print the test again with a larger step")
+
+
+def _xy(x: float, y: float) -> dict:
+    return {"x": x, "y": y}
+
+
+@mcp.tool()
+async def read_tool_offset_calibration(
+    reference_tool: Annotated[int, Field(ge=1, description="1-based extruder/head that printed the reference combs (the ones with the tabs).")],
+    tool: Annotated[int, Field(ge=1, description="1-based extruder/head whose XY offset was checked.")],
+    x_reading: Annotated[float, Field(description=(
+        "Pair of teeth that lines up on the X scale, counted from the centre pair behind the long tab: 0 at the "
+        "centre, positive toward the short tab, negative the other way; whole or half teeth, -10 to 10."))],
+    y_reading: Annotated[float, Field(description="The same reading on the Y scale.")],
+    step: Annotated[float | None, Field(description=(
+        "The step_mm the test was created with, 0.02 to 0.2. Omit for 0.05."))] = None,
+) -> dict:
+    """Turn the reading of the XY offset test between two tool heads into the measured offset and its correction, in mm.
+
+    Takes the pair of teeth that lines up on each scale of the print made with
+    create_tool_offset_calibration and computes, with no call to OrcaSlicer: `offset_mm`, how far
+    the head prints from where it should (-reading x step), and `correction_mm`, how far its
+    printing has to move (the opposite). It writes no preset. `how_to_correct` gives the steps in
+    order: first the printer's own offset calibration, since a printer such as the Creator 5 Pro
+    keeps the head offsets in its firmware, and only if the reading stays, `orca_extruder_offset`,
+    the amount to add to that head's extruder_offset in the printer preset. A reading outside
+    the ten teeth of the scale, or that is not a whole or half tooth, is refused with
+    invalid_reading."""
+    if reference_tool == tool:
+        return {"error": "same_tool", "detail": "the test compares two different heads; pick another tool"}
+    try:
+        step_mm = checked_step(step)
+    except ToolOffsetTestError as e:
+        return {"error": "invalid_step", "detail": str(e)}
+    try:
+        measured = read_tool_offset(x_reading, y_reading, step_mm)
+    except ToolOffsetTestError as e:
+        return {"error": "invalid_reading", "detail": str(e)}
+    out: dict = {"reference_tool": reference_tool, "tool": tool, "step_mm": measured.step,
+                 "reading": _xy(measured.x.reading, measured.y.reading),
+                 "offset_mm": _xy(measured.x.offset_mm, measured.y.offset_mm),
+                 "correction_mm": _xy(measured.x.correction_mm, measured.y.correction_mm),
+                 "lined_up": measured.lined_up, "preset_written": False}
+    warnings = [_TOOL_OFFSET_AT_END.format(axis=axis) for axis, value in (("X", measured.x), ("Y", measured.y))
+                if value.at_scale_end]
+    if warnings:
+        out["warnings"] = warnings
+    if measured.lined_up:
+        return out | {"how_to_correct": [_TOOL_OFFSET_LINED_UP]}
+    return out | {
+        "how_to_correct": [_TOOL_OFFSET_FIRMWARE_STEP,
+                           _TOOL_OFFSET_ORCA_STEP.format(tool=tool, reference=reference_tool)],
+        "orca_extruder_offset": {"key": "extruder_offset", "tool": tool,
+                                 "add_mm": _xy(measured.x.offset_mm, measured.y.offset_mm),
+                                 "note": _TOOL_OFFSET_ORCA_NOTE}}
 
 
 QUEUE_CONFIRM_ATTEMPTS = 5
@@ -4556,6 +4632,7 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
     "create_calibration": ("Create calibration test", False, True),
     "create_circle_calibration": ("Add the circle compensation test piece", False, False),
     "create_tool_offset_calibration": ("Add the XY offset test between two tool heads", False, False),
+    "read_tool_offset_calibration": ("Read the XY offset test between two tool heads", True, False),
     "send_to_queue": ("Send plate to print queue", False, False),
     "duplicate_object": ("Duplicate object", False, False),
     "transform_object": ("Transform object", False, False),
