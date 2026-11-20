@@ -36,11 +36,12 @@ ARGS = {
     "compare_slices": {"variants": [{"name": "a", "changes": {}}, {"name": "b", "changes": {"layer_height": 0.3}}]},
     "apply_calibration": {"filament": "Fake PLA", "test": "pa_pattern", "value": 0.04},
     "compare_settings": {"key": "layer_height", "values": [0.2, 0.3]},
+    "create_tool_offset_calibration": {"reference_tool": 1, "tool": 2},
 }
 # Tools that talk to the printer, not OrcaSlicer (the fake printer address is unreachable).
 PRINTER_TOOLS = {"check_printer_match", "get_printer_status", "list_print_history", "wait_for_printer"}
 # Tools that talk to the Gestor 3D print queue, not OrcaSlicer (the test points them at a closed port).
-GESTOR_TOOLS = {"sync_presets", "create_circle_calibration"}
+GESTOR_TOOLS = {"sync_presets", "create_circle_calibration", "create_tool_offset_calibration"}
 EXPECT_WORKS = {"get_status", "get_config", "set_config", "list_presets", "get_preset_config",
                 "select_preset", "list_objects", "get_project",
                 # after the user pressed Slice plate (plugin 0.2.0)
