@@ -36,11 +36,21 @@ def test_no_phantom_commented_setting():
     assert "adaptive_layer_height" not in _doc()
 
 
-def test_versions_are_marked_for_both_fork_lines():
-    # Built from 2.4.2 and 2.5.0 (scripts/merge_settings_schemas.py): a 2.5-only key says so,
-    # and a key 2.5 dropped is still described, with the version that removed it.
+def test_versions_are_marked_for_every_line():
+    # Built from 2.4.2, 2.5.0, 2.5.1 and the ErikAnswer fork (scripts/merge_settings_schemas.py): a
+    # 2.5-only key says so, a key 2.5 dropped is still described with the version that removed it,
+    # and a key only our build has says "since": "fork".
     doc = _doc()
-    assert set(doc["_meta"]["versions"]) == {"2.4.2", "2.5.0"}
+    assert list(doc["_meta"]["versions"]) == ["2.4.2", "2.5.0", "2.5.1", "fork"]
     assert doc["slicing_pipeline_plugin"]["since"] == "2.5.0"
     assert doc["silent_mode"]["removed_in"] == "2.5.0"
     assert "since" not in doc["layer_height"] and "removed_in" not in doc["layer_height"]
+    assert doc["prime_tower_side_scrape"]["since"] == "fork"
+
+
+def test_every_fork_key_is_described():
+    fork = {k: v for k, v in _doc().items() if not k.startswith("_") and v.get("since") == "fork"}
+    assert {"filament_prime_tower_speed_factor_curve", "prime_tower_side_scrape", "prime_tower_tail_speed_factor",
+            "enable_circle_compensation", "hole_coef_1", "counter_limit_max", "enable_height_slowdown",
+            "cooling_slowdown_logic", "custom_parameters_filament"} <= set(fork)
+    assert all(r["label"] and r["tooltip"] and r["type"] for r in fork.values())
