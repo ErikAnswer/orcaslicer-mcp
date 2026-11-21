@@ -45,6 +45,7 @@ def test_failure_retrieval_goldens(query, expect):
     ("part must survive vibration and bolts", "considerations/strength.md"),
     ("what should I ask the user first", "interview.md"),
     ("printing miniatures with fine detail", "considerations/small-features.md"),
+    ("chamber temperature per filament in the start gcode", "considerations/custom-gcode-parameters.md"),
 ])
 def test_consideration_retrieval_goldens(query, expect):
     assert any(c.relpath == expect for c in search_knowledge(query)), query
