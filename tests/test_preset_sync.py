@@ -40,6 +40,20 @@ def test_api_values_take_the_file_shapes_orca_writes():
     assert ps.from_api("print_settings_id", "0.20mm") == "0.20mm"
 
 
+def test_custom_parameters_of_the_fork_take_the_file_shapes_orca_writes():
+    assert ps.from_api("custom_parameters_filament", '"{\\"chamber\\": 45}";""') == ['{"chamber": 45}', ""]
+    assert ps.from_api("custom_parameters_printer", '{\\"park_x\\": 150}') == '{"park_x": 150}'
+    assert ps.from_api("custom_parameters_print", "") == ""
+    assert ps.to_api("custom_parameters_filament", ['{"chamber": 45}']) == '"{\\"chamber\\": 45}"'
+    assert ps.to_api("custom_parameters_printer", '{"park_x": 150}') == '{\\"park_x\\": 150}'
+
+
+def test_a_custom_parameter_matches_whether_given_as_text_or_as_a_list():
+    pc = {"inherits": "", "custom_parameters_filament": '"{\\"chamber\\": 45}"'}
+    gestor = {"inherits": "", "custom_parameters_filament": ['{"chamber": 45}']}
+    assert ps.compare(pc, gestor, {}).differences == []
+
+
 def test_canonical_ignores_number_spelling_and_splits_vectors_given_as_text():
     assert ps.canonical("nozzle_temperature", ["210"]) == ps.canonical("nozzle_temperature", "210.0")
     assert ps.canonical("filament_flow_ratio", ["1"]) != ps.canonical("filament_flow_ratio", ["0.98"])

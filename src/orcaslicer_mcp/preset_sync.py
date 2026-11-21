@@ -21,7 +21,9 @@ FILE_ONLY_KEYS = frozenset({"name", "from", "version", "type", "inherits", "is_c
                             "renamed_from"})
 _TYPE_OVERRIDES = {"print_settings_id": "coString", "printer_settings_id": "coString",
                    "filament_settings_id": "coStrings", "filament_ids": "coStrings",
-                   "filament_multi_colour": "coStrings", "filament_colour_type": "coStrings"}
+                   "filament_multi_colour": "coStrings", "filament_colour_type": "coStrings",
+                   "custom_parameters_print": "coString", "custom_parameters_printer": "coString",
+                   "custom_parameters_filament": "coStrings"}
 _COMMA_VECTORS = frozenset({"coFloats", "coInts", "coBools", "coPercents", "coFloatsOrPercents",
                             "coEnums", "coPoints"})
 _RAW_STRING_EXCEPTIONS = frozenset({"bed_custom_texture", "bed_custom_model"})
