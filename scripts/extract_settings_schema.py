@@ -12,7 +12,7 @@ DEFAULT_OUT = Path(__file__).resolve().parents[1] / "src/orcaslicer_mcp/data/pri
 
 def _git(src: Path, *args: str) -> str:
     return subprocess.run(["git", "-C", str(src.parent), *args],
-                          capture_output=True, text=True, check=True).stdout
+                          capture_output=True, text=True, encoding="utf-8", errors="replace", check=True).stdout
 
 
 def git_sha(src: Path, ref: str = "HEAD") -> str:
