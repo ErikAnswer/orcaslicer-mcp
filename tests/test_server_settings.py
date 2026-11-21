@@ -58,3 +58,16 @@ def test_search_multiword_tooltip_words():
 def test_search_phrase_matches_still_outrank_word_matches():
     out = srv.search_settings("infill")
     assert "infill" in out["results"][0]["key"]
+
+
+def test_describe_setting_knows_the_fork_keys():
+    out = srv.describe_setting("prime_tower_tail_speed_factor")
+    assert out["since"] == "fork"
+    assert (out["type"], out["unit"], out["min"], out["max"]) == ("coPercent", "%", 10, 100)
+    for key in ("filament_prime_tower_speed_factor_curve", "prime_tower_side_scrape", "enable_circle_compensation"):
+        assert srv.describe_setting(key)["tooltip"]
+
+
+def test_search_settings_finds_the_fork_keys():
+    assert "prime_tower_side_scrape" in [r["key"] for r in srv.search_settings("side scrape")["results"]]
+    assert "enable_circle_compensation" in [r["key"] for r in srv.search_settings("circle compensation")["results"]]
