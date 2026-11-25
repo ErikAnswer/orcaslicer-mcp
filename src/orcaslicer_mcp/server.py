@@ -1479,8 +1479,9 @@ async def list_objects() -> dict:
 
     Each has a stable id, name, size_mm, transform (offset/rotation/scale) and, on fork
     v2.4.2-mcp.13 and later, the 0-based plate it sits on (-1 when it is off every plate).
-    On erik-v2.5.1-mcp.22 and later, `modifiers` lists its modifiers, negative parts and
-    support blockers and enforcers, each with its id, name, type and own settings.
+    On erik-v2.5.1-mcp.22 and later, `modifiers` lists the volumes that are not printed parts
+    (modifiers, negative parts, support blockers and enforcers, precise seam), each with its id,
+    name, type and own settings.
     """
     try:
         async with _client() as c:
