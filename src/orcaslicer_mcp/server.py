@@ -3480,9 +3480,9 @@ async def add_modifier(
 
     The reply gives the modifier's id and name and where it went (`world_center_mm`,
     `world_bottom_mm`); list_objects shows it under `modifiers`. It invalidates the last slice,
-    so re-slice afterwards. The OrcaSlicer MCP panel lists it with a Remove action; to remove
-    it through these tools, delete the object and load it again. Needs the OrcaSlicer MCP build
-    erik-v2.5.1-mcp.22 or later."""
+    so re-slice afterwards. These tools cannot remove a modifier: ask the user to use the Remove
+    action of its row in the OrcaSlicer MCP panel, or to delete it in OrcaSlicer's object list.
+    Needs the OrcaSlicer MCP build erik-v2.5.1-mcp.22 or later."""
     try:
         async with _client() as c:
             return await c.add_modifier(object_id, shape, size_mm, center_mm, bottom_mm, changes)
