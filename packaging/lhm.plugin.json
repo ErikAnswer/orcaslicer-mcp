@@ -294,6 +294,10 @@
       "description": "Set a layer height over a Z band of one object; set_layer_height makes the whole object adaptive instead."
     },
     {
+      "name": "add_modifier",
+      "description": "Add a cylinder or box modifier to one object, with settings of its own for the part it covers."
+    },
+    {
       "name": "get_preset_config",
       "description": "Read every setting of a named preset as saved, without selecting it; get_config reads the live settings."
     },

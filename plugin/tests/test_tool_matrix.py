@@ -41,6 +41,7 @@ ARGS = {
     "compare_settings": {"key": "layer_height", "values": [0.2, 0.3]},
     "create_tool_offset_calibration": {"reference_tool": 1, "tool": 2},
     "read_tool_offset_calibration": {"reference_tool": 1, "tool": 2, "x_reading": 2, "y_reading": -1.5},
+    "add_modifier": {"object_id": 1, "shape": "cylinder", "size_mm": [10, 5]},
 }
 # Tools that talk to the printer, not OrcaSlicer (the fake printer address is unreachable).
 PRINTER_TOOLS = {"check_printer_match", "get_printer_status", "list_print_history", "wait_for_printer"}

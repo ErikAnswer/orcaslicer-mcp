@@ -1479,6 +1479,8 @@ async def list_objects() -> dict:
 
     Each has a stable id, name, size_mm, transform (offset/rotation/scale) and, on fork
     v2.4.2-mcp.13 and later, the 0-based plate it sits on (-1 when it is off every plate).
+    On erik-v2.5.1-mcp.22 and later, `modifiers` lists its modifiers, negative parts and
+    support blockers and enforcers, each with its id, name, type and own settings.
     """
     try:
         async with _client() as c:
@@ -3455,6 +3457,38 @@ async def set_height_range(
 
 
 @mcp.tool()
+async def add_modifier(
+    object_id: Annotated[int, Field(description="Integer id of the object, from list_objects.")],
+    shape: Annotated[Literal["cylinder", "box"], Field(description="cylinder or box.")],
+    size_mm: Annotated[list[float], Field(description="cylinder: [diameter, height]; box: [x, y, z]; in mm, each above 0.")],
+    config: Annotated[dict | None, Field(description=(
+        "The modifier's own settings, e.g. {'extruder': 2} to print what it covers with filament 2 (0 = the "
+        "object's), or {'sparse_infill_density': '40%'}. Only extruder and the per-region keys (walls, infill, "
+        "top and bottom shells...); a key the modifier can't take is refused and nothing is added."))] = None,
+    center_mm: Annotated[list[float] | None, Field(description=(
+        "[dx, dy] in mm from the centre of the object's bounding box to the modifier's centre; omit for the centre."))] = None,
+    bottom_mm: Annotated[float | None, Field(description=(
+        "How far above the object's bottom the modifier starts, in mm; omit for 0."))] = None,
+) -> dict:
+    """Add a cylinder or box modifier to one object, with settings of its own for the part it covers.
+
+    Like Add Modifier in OrcaSlicer's object list, aligned with the bed: for example a 10 mm
+    cylinder with {'extruder': 2} prints the core of a part in filament 2, and the rest of the
+    object keeps its own settings. The two regions then share every layer they cross.
+
+    The reply gives the modifier's id and name and where it went (`world_center_mm`,
+    `world_bottom_mm`); list_objects shows it under `modifiers`. It invalidates the last slice,
+    so re-slice afterwards. The OrcaSlicer MCP panel lists it with a Remove action; to remove
+    it through these tools, delete the object and load it again. Needs the OrcaSlicer MCP build
+    erik-v2.5.1-mcp.22 or later."""
+    try:
+        async with _client() as c:
+            return await c.add_modifier(object_id, shape, size_mm, center_mm, bottom_mm, config)
+    except ApiError as e:
+        return _m4_err(e, "fork erik-v2.5.1-mcp.22 or later")
+
+
+@mcp.tool()
 async def get_preset_config(type: str, name: str) -> dict:
     """Read every setting of a named preset as saved, without selecting it; get_config reads the live settings.
 
@@ -4653,6 +4687,7 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
     "set_filament_slot_preset": ("Set a slot's filament preset", False, False),
     "set_layer_height": ("Set layer height", False, False),
     "set_height_range": ("Set height-range config", False, False),
+    "add_modifier": ("Add a modifier to an object", False, False),
     "rename_preset": ("Rename preset", False, False),
     "save_preset": ("Save preset (overwrites stored settings)", False, True),
     "edit_preset": ("Edit preset (overwrites stored settings)", False, True),
