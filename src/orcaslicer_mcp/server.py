@@ -3462,10 +3462,11 @@ async def add_modifier(
     object_id: Annotated[int, Field(description="Integer id of the object, from list_objects.")],
     shape: Annotated[Literal["cylinder", "box"], Field(description="cylinder or box.")],
     size_mm: Annotated[list[float], Field(description="cylinder: [diameter, height]; box: [x, y, z]; in mm, each above 0.")],
-    config: Annotated[dict | None, Field(description=(
+    changes: Annotated[dict | None, Field(description=(
         "The modifier's own settings, e.g. {'extruder': 2} to print what it covers with filament 2 (0 = the "
         "object's), or {'sparse_infill_density': '40%'}. Only extruder and the per-region keys (walls, infill, "
-        "top and bottom shells...); a key the modifier can't take is refused and nothing is added."))] = None,
+        "top and bottom shells...), checked as set_object_config checks them; a key the modifier can't take is "
+        "refused and nothing is added."))] = None,
     center_mm: Annotated[list[float] | None, Field(description=(
         "[dx, dy] in mm from the centre of the object's bounding box to the modifier's centre; omit for the centre."))] = None,
     bottom_mm: Annotated[float | None, Field(description=(
@@ -3484,7 +3485,7 @@ async def add_modifier(
     erik-v2.5.1-mcp.22 or later."""
     try:
         async with _client() as c:
-            return await c.add_modifier(object_id, shape, size_mm, center_mm, bottom_mm, config)
+            return await c.add_modifier(object_id, shape, size_mm, center_mm, bottom_mm, changes)
     except ApiError as e:
         return _m4_err(e, "fork erik-v2.5.1-mcp.22 or later")
 

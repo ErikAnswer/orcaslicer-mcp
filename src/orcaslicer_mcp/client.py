@@ -331,12 +331,15 @@ class OrcaClient:
         if changed:
             await self._judge_keys(changed)
 
-    async def set_object_config(self, obj_id: int, changes: dict) -> dict:
+    async def _check_object_changes(self, changes: dict) -> None:
         check_placeholders(changes)
         await self._check_ranges(changes, self._live_values)
         hits = sensitive_keys(changes or {})
         if hits:
             await self._judge_keys(hits)
+
+    async def set_object_config(self, obj_id: int, changes: dict) -> dict:
+        await self._check_object_changes(changes)
         return await self._request("PUT", f"/api/v1/objects/{obj_id}/config", json=changes)
 
     async def transform_object(self, obj_id: int, translate=None, rotate=None, scale=None) -> dict:
@@ -537,6 +540,7 @@ class OrcaClient:
         if bottom_mm is not None:
             body["bottom_mm"] = bottom_mm
         if config:
+            await self._check_object_changes(config)
             body["config"] = config
         return await self._request("POST", f"/api/v1/objects/{obj_id}/modifier", json=body)
 

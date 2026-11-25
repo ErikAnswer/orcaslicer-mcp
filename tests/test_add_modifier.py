@@ -56,5 +56,40 @@ async def test_unknown_object_keeps_its_message():
 async def test_refused_settings_are_relayed():
     respx.post(ROUTE).mock(return_value=httpx.Response(422, json={
         "error": "invalid_config", "errors": {"layer_height": "not_a_modifier_setting"}}))
-    out = await srv.add_modifier(7, "cylinder", [10, 5], {"layer_height": 0.1})
+    out = await srv.add_modifier(7, "cylinder", [10, 5], {"wall_loops": 3})
     assert out["errors"] == {"layer_height": "not_a_modifier_setting"}
+
+
+@respx.mock
+async def test_out_of_range_setting_is_refused_before_anything_is_sent():
+    route = respx.post(ROUTE).mock(return_value=httpx.Response(200, json={"id": 7, "modifier": {"id": 9}}))
+    out = await srv.add_modifier(7, "cylinder", [10, 5], {"sparse_infill_density": "250%"})
+    assert "error" in out
+    assert not route.called
+
+
+@respx.mock
+async def test_protected_key_is_refused_before_anything_is_sent(monkeypatch):
+    monkeypatch.delenv("ORCA_MCP_ALLOW_KEYS", raising=False)
+    respx.get(f"{BASE}/api/v1/status").mock(return_value=httpx.Response(200, json={"sensitive_keys_allowed": False}))
+    respx.post(f"{BASE}/api/v1/activity/note").mock(return_value=httpx.Response(200, json={}))
+    route = respx.post(ROUTE).mock(return_value=httpx.Response(200, json={"id": 7, "modifier": {"id": 9}}))
+    out = await srv.add_modifier(7, "cylinder", [10, 5], {"post_process": "evil.exe"})
+    assert "error" in out
+    assert not route.called
+
+
+@respx.mock
+async def test_redacted_value_is_refused_before_anything_is_sent():
+    route = respx.post(ROUTE).mock(return_value=httpx.Response(200, json={"id": 7, "modifier": {"id": 9}}))
+    out = await srv.add_modifier(7, "cylinder", [10, 5], {"wall_loops": "<redacted>"})
+    assert "error" in out
+    assert not route.called
+
+
+@respx.mock
+async def test_settings_sent_under_another_name_still_reach_the_modifier():
+    route = respx.post(ROUTE).mock(return_value=httpx.Response(200, json={"id": 7, "modifier": {"id": 9}}))
+    for name in ("changes", "config", "settings"):
+        await srv.mcp.call_tool("add_modifier", {"object_id": 7, "shape": "cylinder", "size_mm": [10, 5], name: {"extruder": 2}})
+        assert json.loads(route.calls.last.request.read())["config"] == {"extruder": 2}, name
