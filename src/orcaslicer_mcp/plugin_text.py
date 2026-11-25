@@ -56,6 +56,8 @@ _ACTIONS: dict[str, tuple[str, str]] = {
     "set_object_config": ("Per-object settings", _PER_OBJECT),
     "set_layer_height": ("Variable layer height", _PER_OBJECT),
     "set_height_range": ("Height-range settings", _PER_OBJECT),
+    "add_modifier": ("Adding a modifier",
+                     "ask the user to right-click the object in OrcaSlicer and use Add Modifier there"),
     "list_plates": ("Listing plates", _PLATES),
     "add_plate": ("Adding a plate", _PLATES),
     "select_plate": ("Switching plates", _PLATES),

@@ -331,12 +331,15 @@ class OrcaClient:
         if changed:
             await self._judge_keys(changed)
 
-    async def set_object_config(self, obj_id: int, changes: dict) -> dict:
+    async def _check_object_changes(self, changes: dict) -> None:
         check_placeholders(changes)
         await self._check_ranges(changes, self._live_values)
         hits = sensitive_keys(changes or {})
         if hits:
             await self._judge_keys(hits)
+
+    async def set_object_config(self, obj_id: int, changes: dict) -> dict:
+        await self._check_object_changes(changes)
         return await self._request("PUT", f"/api/v1/objects/{obj_id}/config", json=changes)
 
     async def transform_object(self, obj_id: int, translate=None, rotate=None, scale=None) -> dict:
@@ -527,6 +530,19 @@ class OrcaClient:
                                clear: bool = False) -> dict:
         body = {"clear": True} if clear else {"min_z": min_z, "max_z": max_z, "layer_height": layer_height}
         return await self._request("PUT", f"/api/v1/objects/{obj_id}/height_range", json=body)
+
+    async def add_modifier(self, obj_id: int, shape: str, size_mm: list[float],
+                           center_mm: list[float] | None = None, bottom_mm: float | None = None,
+                           config: dict | None = None) -> dict:
+        body: dict = {"shape": shape, "size_mm": size_mm}
+        if center_mm is not None:
+            body["center_mm"] = center_mm
+        if bottom_mm is not None:
+            body["bottom_mm"] = bottom_mm
+        if config:
+            await self._check_object_changes(config)
+            body["config"] = config
+        return await self._request("POST", f"/api/v1/objects/{obj_id}/modifier", json=body)
 
     async def get_gcode(self) -> bytes:
         mark_reached()
