@@ -298,6 +298,14 @@
       "description": "Add a cylinder or box modifier to one object, with settings of its own for the part it covers."
     },
     {
+      "name": "load_parts",
+      "description": "Load several model files as one object with a part per file, each where its file puts it; load_model loads one file as its own object."
+    },
+    {
+      "name": "set_part_config",
+      "description": "Change settings for one part or modifier of an object, all or nothing; set_object_config changes them for the whole object."
+    },
+    {
       "name": "get_preset_config",
       "description": "Read every setting of a named preset as saved, without selecting it; get_config reads the live settings."
     },

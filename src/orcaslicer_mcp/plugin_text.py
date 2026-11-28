@@ -56,6 +56,12 @@ _ACTIONS: dict[str, tuple[str, str]] = {
     "set_object_config": ("Per-object settings", _PER_OBJECT),
     "set_layer_height": ("Variable layer height", _PER_OBJECT),
     "set_height_range": ("Height-range settings", _PER_OBJECT),
+    "load_parts": ("Loading files as one object",
+                   "ask the user to drag the files onto the plate together in OrcaSlicer and answer Yes to "
+                   "loading them as a single object with multiple parts"),
+    "set_part_config": ("Per-part settings",
+                        "ask the user to right-click the part in OrcaSlicer's object list and use Change Filament "
+                        "there"),
     "add_modifier": ("Adding a modifier",
                      "ask the user to right-click the object in OrcaSlicer and use Add Modifier there"),
     "list_plates": ("Listing plates", _PLATES),

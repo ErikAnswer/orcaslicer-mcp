@@ -85,7 +85,9 @@ So to give slot 2 its own bed temperature when slots 1 and 2 share "Generic ASA"
    values.
 3. Print-group changes with `set_config` (`wall_loops`, `brim_width`,
    `sparse_infill_density`, `initial_layer_speed`, ...). These are plain scalars.
-4. `load_model`, then `set_object_config(id, {"extruder": N})` for each object.
+4. `load_model`, then `set_object_config(id, {"extruder": N})` for each object. A model that comes as
+   one file per colour with a shared origin: `load_parts` with all the files, then
+   `set_part_config(id, part_id, {"extruder": N})` for each part.
 5. `slice_and_wait`, then `get_slice_warnings`.
 
 ## Related

@@ -30,6 +30,8 @@ ALIASES: dict[str, tuple[str, ...]] = {
     "keywords": ("query",), "filter": ("query",),
     "plate": ("index",), "plate_index": ("index", "plate"), "plate_id": ("index", "plate"),
     "file": ("path",), "filepath": ("path",), "file_path": ("path",),
+    "files": ("paths",), "parts": ("paths",), "urls": ("paths",),
+    "part": ("part_id",), "volume_id": ("part_id",),
     "model_path": ("path", "model_name"), "project": ("path",), "project_path": ("path",),
     "model": ("path", "model_name"),
     "preset": ("name",), "preset_name": ("name",), "preset_type": ("type",), "kind": ("type",),
