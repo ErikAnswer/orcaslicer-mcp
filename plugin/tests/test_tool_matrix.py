@@ -42,6 +42,8 @@ ARGS = {
     "create_tool_offset_calibration": {"reference_tool": 1, "tool": 2},
     "read_tool_offset_calibration": {"reference_tool": 1, "tool": 2, "x_reading": 2, "y_reading": -1.5},
     "add_modifier": {"object_id": 1, "shape": "cylinder", "size_mm": [10, 5]},
+    "load_parts": {"paths": ["C:/models/body.stl", "C:/models/inlay.stl"]},
+    "set_part_config": {"object_id": 1, "part_id": 2, "changes": {"extruder": 2}},
 }
 # Tools that talk to the printer, not OrcaSlicer (the fake printer address is unreachable).
 PRINTER_TOOLS = {"check_printer_match", "get_printer_status", "list_print_history", "wait_for_printer"}

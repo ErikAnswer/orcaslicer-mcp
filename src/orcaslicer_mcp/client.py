@@ -489,6 +489,9 @@ class OrcaClient:
         return await self._request("POST", "/api/v1/model", json={key: path},
                                    timeout=130.0)
 
+    async def load_parts(self, paths: list[str]) -> dict:
+        return await self._request("POST", "/api/v1/model", json={"parts": paths}, timeout=130.0)
+
     async def select_preset(self, ptype: str, name: str, slot: int | None = None) -> dict:
         body = {"type": ptype, "name": name}
         if slot is not None:
@@ -543,6 +546,11 @@ class OrcaClient:
             await self._check_object_changes(config)
             body["config"] = config
         return await self._request("POST", f"/api/v1/objects/{obj_id}/modifier", json=body)
+
+    async def set_part_config(self, obj_id: int, part_id: int, changes: dict) -> dict:
+        await self._check_object_changes(changes)
+        return await self._request("PUT", f"/api/v1/objects/{obj_id}/part_config",
+                                   json={"part_id": part_id, "config": changes})
 
     async def get_gcode(self) -> bytes:
         mark_reached()

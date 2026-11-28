@@ -1481,7 +1481,9 @@ async def list_objects() -> dict:
     v2.4.2-mcp.13 and later, the 0-based plate it sits on (-1 when it is off every plate).
     On erik-v2.5.1-mcp.22 and later, `modifiers` lists the volumes that are not printed parts
     (modifiers, negative parts, support blockers and enforcers, precise seam), each with its id,
-    name, type and own settings.
+    name, type and own settings. On erik-v2.5.1-mcp.23 and later, `parts` lists the printed parts
+    of each object: id, name, `extruder` (0 = the object's), own settings, size_mm and the box
+    it takes on the bed (bbox_min, bbox_max); set_part_config takes these ids.
     """
     try:
         async with _client() as c:
@@ -3155,6 +3157,10 @@ async def load_model(path: str) -> dict:
         return _m4a_err(e)
 
 
+_MAX_PARTS = 32
+_PARTS_BUILD = "fork erik-v2.5.1-mcp.23 or later"
+
+
 async def _plugin_refusal(c) -> dict | None:
     """For a tool that would change something before reaching a route the plugin lacks:
     the refusal to return up front, so nothing is left half done. None on the fork."""
@@ -3488,6 +3494,66 @@ async def add_modifier(
             return await c.add_modifier(object_id, shape, size_mm, center_mm, bottom_mm, changes)
     except ApiError as e:
         return _m4_err(e, "fork erik-v2.5.1-mcp.22 or later")
+
+
+@mcp.tool()
+async def load_parts(
+    paths: Annotated[list[str], Field(description=(
+        "2 to 32 files, each a path on the OrcaSlicer machine or a home model library URL; .stl, .obj, .step or "
+        ".stp, never .3mf."))],
+) -> dict:
+    """Load several model files as one object with a part per file, each where its file puts it; load_model loads one file as its own object.
+
+    For a model exported as one file per colour or material (a body and its inlays, all with
+    the same origin): the parts keep their places relative to each other and the object lands
+    on the bed as a whole, as dragging the files into OrcaSlicer together and answering Yes to
+    "Load these files as a single object with multiple parts?". load_model would lay each file
+    flat on the bed as a separate object.
+
+    The reply gives the object and its `parts` (id, name, extruder, size and box on the bed);
+    give each part its filament with set_part_config. URLs follow the rules of load_model.
+    Needs the OrcaSlicer MCP build erik-v2.5.1-mcp.23 or later.
+    """
+    if not isinstance(paths, list) or not 2 <= len(paths) <= _MAX_PARTS or not all(
+            isinstance(p, str) and p for p in paths):
+        return {"error": "bad_parts", "detail": f"paths takes 2 to {_MAX_PARTS} file paths or library URLs"}
+    try:
+        async with _client() as c:
+            status = await c.get_status()
+            if status.get("backend") == "plugin":
+                return _plugin_text(_CURRENT_TOOL.get())
+            if "object_parts" not in (status.get("capabilities") or []):
+                return {"error": f"not available on this OrcaSlicer build (needs {_PARTS_BUILD})"}
+            return await c.load_parts(paths)
+    except ApiError as e:
+        out = _m4_err(e, _PARTS_BUILD)
+        part = (getattr(e, "body", None) or {}).get("part")
+        return out | {"part": part} if part else out
+
+
+@mcp.tool()
+async def set_part_config(
+    object_id: Annotated[int, Field(description="Integer id of the object, from list_objects.")],
+    part_id: Annotated[int, Field(description=(
+        "Id of one of the object's `parts` or `modifiers`, from list_objects or the reply of load_parts."))],
+    changes: Annotated[dict, Field(description=(
+        "The part's own settings, e.g. {'extruder': 2} to print it with filament 2 (0 = the object's), or "
+        "{'sparse_infill_density': '40%'}. Only extruder and the per-region keys (walls, infill, top and bottom "
+        "shells...), checked as set_object_config checks them."))],
+) -> dict:
+    """Change settings for one part or modifier of an object, all or nothing; set_object_config changes them for the whole object.
+
+    The usual use is the filament of each part of a multi-colour object: load it with
+    load_parts, then {'extruder': N} per part (1-based filament, 0 goes back to the object's).
+    list_objects shows the result under `parts`. It invalidates the last slice, so re-slice
+    afterwards. Needs the OrcaSlicer MCP build erik-v2.5.1-mcp.23 or later."""
+    if not isinstance(changes, dict) or not changes:
+        return {"error": "config_must_be_object", "detail": "changes takes at least one setting, e.g. {'extruder': 2}"}
+    try:
+        async with _client() as c:
+            return await c.set_part_config(object_id, part_id, changes)
+    except ApiError as e:
+        return _m4_err(e, _PARTS_BUILD)
 
 
 @mcp.tool()
@@ -4690,6 +4756,8 @@ _TOOL_ANNOTATIONS: dict[str, tuple[str, bool, bool]] = {
     "set_layer_height": ("Set layer height", False, False),
     "set_height_range": ("Set height-range config", False, False),
     "add_modifier": ("Add a modifier to an object", False, False),
+    "load_parts": ("Load files as one multipart object", False, False),
+    "set_part_config": ("Set one part's settings", False, False),
     "rename_preset": ("Rename preset", False, False),
     "save_preset": ("Save preset (overwrites stored settings)", False, True),
     "edit_preset": ("Edit preset (overwrites stored settings)", False, True),
