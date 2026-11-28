@@ -111,3 +111,19 @@ async def test_set_part_config_refuses_an_out_of_range_setting_before_anything_i
     out = await srv.set_part_config(7, 12, {"sparse_infill_density": "250%"})
     assert "error" in out
     assert not route.called
+
+
+@respx.mock
+async def test_load_parts_reports_a_bad_token_as_such():
+    respx.get(STATUS).mock(return_value=httpx.Response(401, json={"error": "unauthorized"}))
+    route = respx.post(MODEL).mock(return_value=httpx.Response(200, json=LOADED))
+    out = await srv.load_parts(FILES)
+    assert "erik-v2.5.1-mcp.23" not in out["error"]
+    assert not route.called
+
+
+@respx.mock
+async def test_load_parts_reports_an_unreachable_orcaslicer_as_such():
+    respx.get(STATUS).mock(side_effect=httpx.ConnectError("refused"))
+    out = await srv.load_parts(FILES)
+    assert "erik-v2.5.1-mcp.23" not in out["error"]

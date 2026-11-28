@@ -3519,10 +3519,10 @@ async def load_parts(
         return {"error": "bad_parts", "detail": f"paths takes 2 to {_MAX_PARTS} file paths or library URLs"}
     try:
         async with _client() as c:
-            refusal = await _plugin_refusal(c)
-            if refusal:
-                return refusal
-            if not await _has_capability(c, "object_parts"):
+            status = await c.get_status()
+            if status.get("backend") == "plugin":
+                return _plugin_text(_CURRENT_TOOL.get())
+            if "object_parts" not in (status.get("capabilities") or []):
                 return {"error": f"not available on this OrcaSlicer build (needs {_PARTS_BUILD})"}
             return await c.load_parts(paths)
     except ApiError as e:
